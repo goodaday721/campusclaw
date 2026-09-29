@@ -1,0 +1,59 @@
+services:
+  # Only the web service maps a host port (lesson-3 hard requirement,
+  # extended in lesson 4 with the internal qdrant vector store):
+  # minimal attack surface. api, db and qdrant are internal-network only.
+  web:
+    image: nginx:alpine
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Test DB access for `docker compose exec api pytest`
+      TEST_DB_HOST: db
+      TEST_DB_USER: root
+      TEST_DB_PASSWORD: ${DB_ROOT_PASSWORD}
+      TEST_DB_NAME: ${DB_NAME:-campusclaw}_test
+      # Qdrant reachable from inside the compose network
+      QDRANT_HOST: qdrant
+      TEST_QDRANT_HOST: qdrant
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      - db
+      - qdrant
+    restart: unless-stopped
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-campusclaw}
+      MYSQL_USER: ${DB_USER:-app}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+
+  # Vector store for lesson 4. Internal only — no host port mapping.
+  # Stores embedding vectors + identifiers; chunk text stays in MySQL.
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  qdrant_data:

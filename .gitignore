@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment
+.env
+
+# SQLite
+*.db
+*.db-journal
+
+# Uploads / runtime data (seeds regenerate on first boot)
+uploads/
+data/
+
+# Test / cache
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Agent working dir
+.agents/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

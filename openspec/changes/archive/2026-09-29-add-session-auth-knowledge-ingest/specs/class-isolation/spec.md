@@ -1,0 +1,46 @@
+## ADDED Requirements
+
+### Requirement: 班级作用域绑定会话
+
+系统 SHALL 为每个用户绑定其所属 `classId`，班级归属 MUST 存储于服务端用户记录并在每次请求时从服务端会话解析；不接受客户端请求参数或 Cookie 自定义字段中的班级声明。
+
+#### Scenario: 会话解析出所属班级
+- **WHEN** 用户登录成功并携带会话 Cookie 调用受保护接口
+- **THEN** 服务端从 sessions + users 记录解析出的班级与该用户所属班级一致
+
+## MODIFIED Requirements
+
+### Requirement: 跨班访问被服务端拒绝
+
+系统 MUST 在查询层按当前用户 `classId` 过滤；用户访问非本班材料时 MUST 返回与"材料不存在"同构的 404，且不返回任何非本班数据。该过滤 MUST 在数据库查询条件或 ORM 作用域中强制，不依赖前端隐藏按钮。
+
+#### Scenario: A 班用户请求 B 班材料列表
+- **WHEN** A 班用户携带有效会话调用 `GET /materials`
+- **THEN** 返回结果仅含 A 班材料，不包含任何 B 班记录
+
+#### Scenario: A 班用户直接请求 B 班材料详情
+- **WHEN** A 班用户携带有效会话调用 `GET /materials/{id}`，且该材料属于 B 班
+- **THEN** 系统返回 404，响应结构与请求不存在的材料时完全一致
+
+#### Scenario: 教师也只能访问本班
+- **WHEN** 教师携带有效会话调用 `GET /materials/{id}`，且该材料属于其所属班级之外的班级
+- **THEN** 系统返回 404
+
+#### Scenario: 跨班下载被拒
+- **WHEN** A 班用户携带有效会话请求下载 B 班材料
+- **THEN** 系统返回 404，不返回文件内容
+
+### Requirement: 班级过滤在服务端强制
+
+任何班级作用域过滤 MUST 在服务端查询层完成；前端 UI 隐藏或不可见 MUST NOT 是唯一的隔离手段，移除前端控制 MUST NOT 导致跨班数据可见。
+
+#### Scenario: 直接构造 URL 越权访问
+- **WHEN** 用户不经过前端 UI，直接用工具构造非本班材料 ID 调用 `GET /materials/{id}`
+- **THEN** 服务端按其会话解析的 `classId` 过滤后仍返回 404
+
+## REMOVED Requirements
+
+### Requirement: 班级作用域绑定用户
+
+**Reason**: 认证由 JWT 改为服务端会话，"JWT 中携带 classId"的载体不复存在；班级归属改为每次请求从服务端会话解析。
+**Migration**: 由 ADDED 的"班级作用域绑定会话"承接，行为等价且不再依赖令牌。
