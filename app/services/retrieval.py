@@ -89,8 +89,13 @@ def search(
     query: str,
     mode: str = HYBRID,
     final_limit: int | None = None,
+    excerpt_limit: int | None = None,
 ) -> list[dict]:
-    """Run the chosen retrieval mode and return assembled, sourced hits."""
+    """Run the chosen retrieval mode and return assembled, sourced hits.
+
+    excerpt_limit defaults to config.excerpt_limit (search-result display);
+    the ask flow passes a larger value so prompts carry real grounding text.
+    """
     if query is None or not str(query).strip():
         raise EmptyQuery("query must not be empty")
     query = str(query).strip()
@@ -130,7 +135,7 @@ def search(
             ordered_ids,
             class_id,
             final_limit or config.search_final_limit,
-            config.excerpt_limit,
+            excerpt_limit if excerpt_limit is not None else config.excerpt_limit,
         )
         return hits
     finally:

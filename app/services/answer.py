@@ -62,6 +62,9 @@ def build_answer(
             question,
             mode=retrieval.HYBRID,
             final_limit=config.ask_top_k,
+            # Grounding prompts need the real chunk text, not the 200-char
+            # search-result excerpt, or the model refuse on truncated evidence.
+            excerpt_limit=2000,
         )
     except retrieval.RetrievalUnavailable as exc:
         raise AnswerUnavailable(str(exc)) from exc
