@@ -35,7 +35,6 @@ def create_app(config: Config | None = None) -> Flask:
     app.config["QDRANT"] = config.qdrant_config()
     app.config["APP_CONFIG"] = config
     app.config["SESSION_TTL_HOURS"] = config.session_ttl_hours
-    app.config["SESSION_COOKIE_NAME"] = config.session_cookie_name
     app.config["UPLOAD_MAX_SIZE_MB"] = config.upload_max_size_mb
     app.config["UPLOAD_ROOT"] = resolve_upload_root(config.upload_root, ROOT)
 

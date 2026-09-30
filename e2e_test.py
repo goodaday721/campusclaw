@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""End-to-end test: verifies lesson-3 spec scenarios in order (session-based).
+"""End-to-end test: verifies lesson-3/4 spec scenarios in order (Bearer-token auth).
 
 Can run against docker compose up (HTTP via the web entry) or directly via
 Flask test client (requires a reachable MySQL test database).
@@ -12,7 +12,6 @@ import json
 import os
 import sys
 import urllib.request
-from http.cookiejar import CookieJar
 
 # ---- Flask test client mode ----
 def run_with_test_client():
@@ -28,6 +27,7 @@ def run_with_test_client():
     os.environ["DB_USER"] = os.environ.get("TEST_DB_USER", os.environ.get("DB_USER", "root"))
     os.environ["DB_PASSWORD"] = os.environ.get("TEST_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
     os.environ["SESSION_TTL_HOURS"] = "24"
+    os.environ.setdefault("JWT_SECRET", "e2e-jwt-secret")
     os.environ["UPLOAD_ROOT"] = str(ROOT / "uploads")
     # Lesson 4: isolated Qdrant test collection.
     os.environ["QDRANT_HOST"] = os.environ.get("TEST_QDRANT_HOST", "127.0.0.1")
@@ -53,7 +53,7 @@ def run_with_test_client():
     from app import create_app
     from app.db.connection import get_connection
     from app.services import model_gateway, vector_store
-    from tests.conftest import _fake_embed_texts, query_one
+    from tests.conftest import BearerClient, _fake_embed_texts, query_one
 
     # Clean vector collection + offline deterministic fakes.
     _qcfg = Config().qdrant_config()
@@ -87,6 +87,12 @@ def run_with_test_client():
     def new_client():
         return app.test_client()
 
+    def login_new(username: str, password: str):
+        """Login on a fresh client; return (BearerClient, login response)."""
+        c = new_client()
+        r = c.post("/auth/login", json={"username": username, "password": password})
+        return BearerClient(c, r.get_json()["token"]), r
+
     def upload(client, content: bytes, filename: str, **extra):
         data = {"file": (io.BytesIO(content), filename), **extra}
         return client.post("/materials", data=data, content_type="multipart/form-data")
@@ -98,23 +104,18 @@ def run_with_test_client():
     r = c.get("/health")
     check("health 200", r.status_code == 200, str(r.get_json()))
 
-    # 2. Logins — each user gets their own client (session cookie held by client)
-    ta = new_client()
-    r = ta.post("/auth/login", json={"username": "teacher_a", "password": "teacher_a_pass"})
+    # 2. Logins — each user gets their own Bearer client (JWT from response body)
+    ta, r = login_new("teacher_a", "teacher_a_pass")
     check("teacher_a login", r.status_code == 200, f"status={r.status_code}")
-    check("login sets HttpOnly cookie", "HttpOnly" in r.headers.get("Set-Cookie", ""))
-    check("login response has no token", "token" not in (r.get_json() or {}))
+    check("login returns JWT token", len((r.get_json() or {}).get("token", "").split(".")) == 3)
+    check("login sets no cookie", "Set-Cookie" not in r.headers)
 
-    tb = new_client()
-    tb.post("/auth/login", json={"username": "teacher_b", "password": "teacher_b_pass"})
-    sa = new_client()
-    sa.post("/auth/login", json={"username": "student_a", "password": "student_a_pass"})
+    tb, _ = login_new("teacher_b", "teacher_b_pass")
+    sa, _ = login_new("student_a", "student_a_pass")
 
-    # 3. Session fixation defense: re-login re-issues a new session id
-    old_cookie = ta.get_cookie("session_id")
-    ta.post("/auth/login", json={"username": "teacher_a", "password": "teacher_a_pass"})
-    new_cookie = ta.get_cookie("session_id")
-    check("re-login reissues session id", old_cookie != new_cookie)
+    # 3. Re-login issues a distinct token (multi-device: both stay valid)
+    _, r2 = login_new("teacher_a", "teacher_a_pass")
+    check("re-login issues distinct token", r2.get_json()["token"] != ta.token)
 
     # 4. Teacher upload → two tables consistent
     r = upload(ta, b"lesson content", "lesson.txt")
@@ -157,11 +158,13 @@ def run_with_test_client():
     r = sa.get(f"/materials/{uploaded_id}/download")
     check("classmate download content", r.status_code == 200 and r.data == b"lesson content")
 
-    # 9. Logout invalidates immediately
+    # 9. Logout invalidates immediately (server-side revocation)
+    sa_token = sa.token
     r = sa.post("/auth/logout")
-    check("logout 204", r.status_code == 204, f"status={r.status_code}")
-    r = sa.get("/materials")
-    check("session dead after logout", r.status_code == 401, f"status={r.status_code}")
+    check("logout 200", r.status_code == 200, f"status={r.status_code}")
+    stale = BearerClient(new_client(), sa_token)
+    r = stale.get("/materials")
+    check("token dead after logout", r.status_code == 401, f"status={r.status_code}")
 
     # 10. Lesson-4 retrieval: keyword / vector / hybrid + sourcing
     r = ta.post("/search", json={"query": "lesson", "mode": "keyword"})
@@ -193,8 +196,11 @@ def run_with_test_client():
     check("empty query 400", r.status_code == 400, f"status={r.status_code}")
 
     # Cross-class search returns 200 + empty (not 403/404)
-    r = upload(tb, b"b-only secret phrase xyz", "bsecret.txt")
-    r = ta.post("/search", json={"query": "secret phrase xyz", "mode": "keyword"})
+    # Fixture text uses rare CJK chars: they match the B-class upload (so a
+    # scoping bug WOULD surface) but cannot bigram-collide with any A-class
+    # material content (which may contain English words like "sessions").
+    r = upload(tb, "鵨鶄鶅鶆鶇鶈鶉鶊鶋".encode(), "brare.txt")
+    r = ta.post("/search", json={"query": "鵨鶄鶅鶆鶇鶈鶉鶊鶋", "mode": "keyword"})
     check(
         "cross-class search 200 empty",
         r.status_code == 200 and r.get_json()["hits"] == [],
@@ -216,10 +222,10 @@ def run_with_test_client():
     )
     config.vector_threshold = 0.0
 
-    # Reindex: teacher 200, student 403
+    # Reindex: teacher 200, student 403 (fresh student login after logout)
     r = ta.post(f"/materials/{uploaded_id}/reindex", json={"strategy": "hierarchy"})
     check("teacher reindex 200", r.status_code == 200, f"status={r.status_code}")
-    r = sa.post("/auth/login", json={"username": "student_a", "password": "student_a_pass"})
+    sa, _ = login_new("student_a", "student_a_pass")
     r = sa.post(f"/materials/{uploaded_id}/reindex", json={"strategy": "auto"})
     check("student reindex 403", r.status_code == 403, f"status={r.status_code}")
 
@@ -255,10 +261,16 @@ def run_http(base_url="http://localhost:8080"):
         print(f"  [{status}] {name}" + (f" — {detail}" if detail else ""))
 
     def make_session():
-        """One cookie jar per user; HttpOnly cookies are managed by the jar."""
-        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
+        """One opener per user; the Bearer token is attached after login."""
+        opener = urllib.request.build_opener()
         opener.addheaders = []
         return opener
+
+    def login_http(opener, username: str, password: str):
+        s, d = req(opener, "POST", "/auth/login", {"username": username, "password": password})
+        if s == 200 and isinstance(d, dict) and d.get("token"):
+            opener.addheaders = [("Authorization", f"Bearer {d['token']}")]
+        return s, d
 
     def req(opener, method, path, data=None, raw=None, headers=None):
         h = dict(headers or {})
@@ -304,12 +316,13 @@ def run_http(base_url="http://localhost:8080"):
     s, _ = req(anon, "GET", "/health")
     check("health 200", s == 200, f"status={s}")
 
-    # 2. Logins
+    # 2. Logins — token from response body, attached as Authorization header
     ta, tb, sa = make_session(), make_session(), make_session()
-    s, d = req(ta, "POST", "/auth/login", {"username": "teacher_a", "password": "teacher_a_pass"})
+    s, d = login_http(ta, "teacher_a", "teacher_a_pass")
     check("teacher_a login", s == 200, f"status={s}")
-    req(tb, "POST", "/auth/login", {"username": "teacher_b", "password": "teacher_b_pass"})
-    req(sa, "POST", "/auth/login", {"username": "student_a", "password": "student_a_pass"})
+    check("login returns JWT token", isinstance(d, dict) and len(d.get("token", "").split(".")) == 3)
+    login_http(tb, "teacher_b", "teacher_b_pass")
+    login_http(sa, "student_a", "student_a_pass")
 
     # 3. Upload (teacher) → 201
     s, d = req(ta, "POST", "/materials", data={"file": (io.BytesIO(b"lesson content"), "lesson.txt")}, raw=True)
@@ -339,10 +352,10 @@ def run_http(base_url="http://localhost:8080"):
     s, d = req(ta, "POST", "/search", {"query": "   ", "mode": "keyword"})
     check("empty query 400", s == 400, f"status={s}")
 
-    # Cross-class search: 200 + empty hits
+    # Cross-class search: 200 + empty hits (rare CJK fixture, see note above)
     req(tb, "POST", "/materials",
-        data={"file": (io.BytesIO(b"b-only secret phrase xyz"), "bsecret.txt")}, raw=True)
-    s, d = req(ta, "POST", "/search", {"query": "secret phrase xyz", "mode": "keyword"})
+        data={"file": (io.BytesIO("鵨鶄鶅鶆鶇鶈鶉鶊鶋".encode()), "brare.txt")}, raw=True)
+    s, d = req(ta, "POST", "/search", {"query": "鵨鶄鶅鶆鶇鶈鶉鶊鶋", "mode": "keyword"})
     check(
         "cross-class search 200 empty",
         s == 200 and isinstance(d, dict) and d.get("hits") == [],

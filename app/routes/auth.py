@@ -1,15 +1,17 @@
 """Auth routes: POST /auth/login, POST /auth/logout, GET /auth/me.
 
-Server-side session scheme: the browser cookie holds only a random session id;
-role and class are always read from the sessions+users tables per request.
+Bearer-token scheme: login issues an HS256 JWT (payload: sub/jti/iat/exp)
+and registers its jti in the server-side sessions table for revocation;
+role and class are always read from the users table per request.
 """
 import bcrypt
-from flask import Blueprint, current_app, g, jsonify, make_response, request
+from flask import Blueprint, current_app, g, jsonify, request
 
 from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.repositories import sessions as sessions_repo
 from app.repositories.users import UserRepository
+from app.services import token_auth
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -19,7 +21,7 @@ _DUMMY_HASH = bcrypt.hashpw(b"__nonexistent__", bcrypt.gensalt(rounds=12))
 
 @auth_bp.route("/auth/login", methods=["POST"])
 def login():
-    """Authenticate with username+password and issue a NEW session (fixation defense)."""
+    """Authenticate with username+password and issue a JWT bearer token."""
     data = request.get_json(silent=True) or {}
     username = data.get("username", "")
     password = data.get("password", "")
@@ -38,40 +40,34 @@ def login():
         if not user or not password_ok:
             return jsonify({"error": "invalid credentials"}), 401
 
-        # Session fixation defense: discard the old session id, issue a new one
-        old_token = request.cookies.get(current_app.config["SESSION_COOKIE_NAME"])
-        sessions_repo.delete(conn, old_token)
-        token = sessions_repo.create(conn, user["id"], current_app.config["SESSION_TTL_HOURS"])
+        config = current_app.config["APP_CONFIG"]
+        token, jti, expires_at = token_auth.issue(config, user["id"])
+        sessions_repo.create(conn, jti, user["id"], expires_at)
     finally:
         conn.close()
 
-    resp = make_response(
-        jsonify({"user": {"id": user["id"], "role": user["role"], "classId": user["class_id"]}}),
+    return (
+        jsonify(
+            {
+                "token": token,
+                "user": {"id": user["id"], "role": user["role"], "classId": user["class_id"]},
+            }
+        ),
         200,
     )
-    resp.set_cookie(
-        current_app.config["SESSION_COOKIE_NAME"],
-        token,
-        httponly=True,
-        samesite="Lax",
-        path="/",
-    )
-    return resp
 
 
 @auth_bp.route("/auth/logout", methods=["POST"])
+@auth_required
 def logout():
-    """Delete the server-side session row; the session is invalid immediately."""
+    """Delete the server-side session row; the token is invalid immediately."""
     conn = get_connection(current_app.config["DB"])
     try:
-        token = request.cookies.get(current_app.config["SESSION_COOKIE_NAME"])
-        sessions_repo.delete(conn, token)
+        sessions_repo.delete(conn, g.token_jti)
     finally:
         conn.close()
 
-    resp = make_response("", 204)
-    resp.delete_cookie(current_app.config["SESSION_COOKIE_NAME"], path="/")
-    return resp
+    return jsonify({"ok": True}), 200
 
 
 @auth_bp.route("/auth/me", methods=["GET"])

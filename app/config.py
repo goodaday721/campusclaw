@@ -29,7 +29,7 @@ class Config:
         self.db_user = self._require(source, "DB_USER")
         self.db_password = self._require(source, "DB_PASSWORD")
         self.session_ttl_hours = int(self._require(source, "SESSION_TTL_HOURS"))
-        self.session_cookie_name = source.get("SESSION_COOKIE_NAME", "session_id")
+        self.jwt_secret = self._require(source, "JWT_SECRET")
         self.port = int(source.get("PORT", "5000"))
         self.upload_max_size_mb = int(source.get("UPLOAD_MAX_SIZE_MB", "50"))
         self.upload_root = source.get("UPLOAD_ROOT", "uploads")

@@ -1,45 +1,51 @@
-"""Repository for server-side sessions (opaque random tokens)."""
-import secrets
-from datetime import datetime, timedelta, timezone
+"""Repository for server-side session records (JWT jti registry).
 
+The JWT is only the credential envelope; this table is the source of truth
+for revocation. ``id`` stores the token's ``jti`` (32-char uuid4 hex, fits
+the VARCHAR(128) primary key), ``expires_at`` mirrors the token's ``exp``.
+"""
 import pymysql
+from datetime import datetime, timezone
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def create(conn: pymysql.connections.Connection, user_id: int, ttl_hours: int) -> str:
-    """Insert a new session row and return its random token."""
-    token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
+def create(
+    conn: pymysql.connections.Connection,
+    jti: str,
+    user_id: int,
+    expires_at,
+) -> str:
+    """Insert a session row for an issued token and return its jti."""
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO sessions (id, user_id, expires_at) VALUES (%s, %s, %s)",
-            (token, user_id, expires_at),
+            (jti, user_id, expires_at),
         )
     conn.commit()
-    return token
+    return jti
 
 
-def find_valid(conn: pymysql.connections.Connection, token: str | None) -> dict | None:
-    """Return the session joined with its user row if the token exists and is unexpired."""
-    if not token:
+def find_valid(conn: pymysql.connections.Connection, jti: str | None) -> dict | None:
+    """Return the session joined with its user row if the jti exists and is unexpired."""
+    if not jti:
         return None
     with conn.cursor() as cur:
         cur.execute(
             "SELECT s.id AS session_id, s.user_id, u.username, u.role, u.class_id "
             "FROM sessions s JOIN users u ON u.id = s.user_id "
             "WHERE s.id = %s AND s.expires_at > %s",
-            (token, _now()),
+            (jti, _now()),
         )
         return cur.fetchone()
 
 
-def delete(conn: pymysql.connections.Connection, token: str | None) -> None:
-    """Delete a session row (logout / re-issue on login)."""
-    if not token:
+def delete(conn: pymysql.connections.Connection, jti: str | None) -> None:
+    """Delete a session row (logout)."""
+    if not jti:
         return
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM sessions WHERE id = %s", (token,))
+        cur.execute("DELETE FROM sessions WHERE id = %s", (jti,))
     conn.commit()
+
+
+def _now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)

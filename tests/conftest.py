@@ -1,7 +1,8 @@
-"""Pytest fixtures: isolated MySQL test database + seeded app + per-user session clients.
+"""Pytest fixtures: isolated MySQL test database + seeded app + per-user Bearer clients.
 
-Session-based auth: each fixture returns a Flask test client that has logged
-in as that user; the session cookie is held by the client itself.
+Token-based auth: each fixture logs in via /auth/login, takes the JWT from the
+response body and returns a BearerClient that injects
+``Authorization: Bearer <jwt>`` into every request.
 
 Test database: a dedicated database (default campusclaw_test) is dropped and
 recreated per test. Connection target comes from TEST_DB_* env vars, falling
@@ -28,6 +29,7 @@ os.environ["DB_NAME"] = TEST_DB_NAME
 os.environ["DB_USER"] = os.environ.get("TEST_DB_USER", os.environ.get("DB_USER", "root"))
 os.environ["DB_PASSWORD"] = os.environ.get("TEST_DB_PASSWORD", os.environ.get("DB_PASSWORD", ""))
 os.environ.setdefault("SESSION_TTL_HOURS", "24")
+os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 os.environ.setdefault("PORT", "5000")
 os.environ.setdefault("UPLOAD_ROOT", str(ROOT / "uploads"))
 
@@ -169,15 +171,53 @@ def app_client(flask_app):
     return flask_app.test_client()
 
 
-def _logged_in_client(flask_app, username: str, password: str):
-    """Return a fresh test client holding that user's session cookie."""
+class BearerClient:
+    """Wraps a Flask test client and injects ``Authorization: Bearer <jwt>``
+    into every request, so call sites keep the plain client.get/post syntax."""
+
+    def __init__(self, client, token: str):
+        self._client = client
+        self._token = token
+
+    @property
+    def token(self) -> str:
+        return self._token
+
+    def _kw(self, kwargs: dict) -> dict:
+        headers = dict(kwargs.pop("headers", None) or {})
+        headers["Authorization"] = f"Bearer {self._token}"
+        kwargs["headers"] = headers
+        return kwargs
+
+    def get(self, path, **kw):
+        return self._client.get(path, **self._kw(kw))
+
+    def post(self, path, **kw):
+        return self._client.post(path, **self._kw(kw))
+
+    def put(self, path, **kw):
+        return self._client.put(path, **self._kw(kw))
+
+    def patch(self, path, **kw):
+        return self._client.patch(path, **self._kw(kw))
+
+    def delete(self, path, **kw):
+        return self._client.delete(path, **self._kw(kw))
+
+    def open(self, path, **kw):
+        return self._client.open(path, **self._kw(kw))
+
+
+def _logged_in_client(flask_app, username: str, password: str) -> BearerClient:
+    """Login and return a BearerClient holding that user's JWT."""
     client = flask_app.test_client()
     resp = client.post(
         "/auth/login",
         json={"username": username, "password": password},
     )
     assert resp.status_code == 200, f"login failed for {username}: {resp.get_json()}"
-    return client
+    token = resp.get_json()["token"]
+    return BearerClient(client, token)
 
 
 @pytest.fixture()

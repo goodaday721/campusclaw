@@ -17,7 +17,8 @@
 ```bash
 # 1. 准备环境变量（填写数据库密码等必填项）
 cp .env.example .env
-#    编辑 .env：DB_PASSWORD、DB_ROOT_PASSWORD 必须改成你自己的值
+#    编辑 .env：DB_PASSWORD、DB_ROOT_PASSWORD、JWT_SECRET 必须改成你自己的值
+#    （JWT_SECRET 可用 python -c "import secrets; print(secrets.token_hex(32))" 生成）
 #    使用向量检索/问答还需填写 EMBED_API_KEY/EMBED_MODEL 与 CHAT_API_KEY/CHAT_MODEL
 
 # 2. 一键构建并启动（web / api / db / qdrant 四服务）
@@ -46,6 +47,29 @@ docker compose ps
 | teacher_b | teacher_b_pass | 教师 | B班 |
 | student_b | student_b_pass | 学生 | B班 |
 
+## 认证方式（JWT Bearer Token）
+
+登录采用 token 方案：`POST /auth/login` 校验账号密码后签发 **HS256 JWT**（payload 仅含
+`sub`/`jti`/`iat`/`exp`，不含角色与班级），token 存于浏览器 `localStorage`，后续请求全部携带
+`Authorization: Bearer <token>` 请求头；服务端同时将 `jti` 登记到 `sessions` 表以支持即时撤销。
+角色与班级每次请求都从数据库实时读取，token payload 声明一律忽略。
+
+```bash
+# 登录：响应体返回 token 与用户信息（不使用 Cookie）
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"teacher_a","password":"teacher_a_pass"}'
+
+# 调用受保护接口：携带 Authorization 请求头
+curl http://localhost:8080/materials -H "Authorization: Bearer <登录返回的token>"
+
+# 登出：服务端删除会话记录，原 token 立即失效
+curl -X POST http://localhost:8080/auth/logout -H "Authorization: Bearer <token>"
+```
+
+浏览器行为：登录后 token 自动保存并在页面内自动附带；退出登录会同时撤销服务端会话并清除本地 token。
+`JWT_SECRET` 是 token 签名密钥（`.env` 必填项），更换后所有已签发 token 立即失效，需重新登录。
+
 ## 知识库检索与问答（第 4 课）
 
 登录 Dashboard 后可使用「知识库检索」与「知识库问答」两块功能；接口同样可直接调用：
@@ -62,7 +86,7 @@ docker compose ps
 - 正文切为切片存入 MySQL `knowledge_chunks`（ngram 全文索引，token=2）；**向量库只存向量与标识，不存正文**。
 - 关键字检索只查 MySQL（不依赖向量库/模型网关）；向量检索余弦相似度阈值 0.35；
   混合检索两路独立过滤后按 RRF（k=60）融合。
-- 检索班级只取自登录会话；请求体伪造 class_id 一律无效；跨班检索表现为 200 + 空命中。
+- 检索班级只取自登录 token 解析出的实时身份（数据库读取）；请求体伪造 class_id 一律无效；跨班检索表现为 200 + 空命中。
 - 上传材料事务提交后才执行切分/嵌入；索引失败不影响已提交材料，切片标记 `failed`，可由教师重建。
 
 ### 模型网关配置（可选，只影响向量/问答）

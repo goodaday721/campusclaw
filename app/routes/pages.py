@@ -1,7 +1,5 @@
-"""前端页面：登录、Dashboard（材料列表/上传/下载/退出）。"""
-from flask import Blueprint, current_app, g, redirect, render_template_string, request
-
-from app.middleware.auth import auth_required
+"""前端页面：登录、Dashboard（材料列表/上传/下载/检索/问答/退出）。"""
+from flask import Blueprint, redirect, render_template_string
 
 pages_bp = Blueprint("pages", __name__)
 
@@ -83,6 +81,8 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     body: JSON.stringify({username: f.username.value, password: f.password.value})
   });
   if (res.ok) {
+    const data = await res.json();
+    localStorage.setItem('cc_token', data.token);
     window.location.href = next;
   } else {
     document.getElementById('err').textContent = '用户名或密码错误';
@@ -154,15 +154,35 @@ DASHBOARD_PAGE = """
 </div>
 
 <script>
+const TOKEN_KEY = 'cc_token';
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+function gotoLogin() {
+  clearToken();
+  window.location.href = '/login?next=' + encodeURIComponent(location.pathname || '/dashboard');
+}
+
+// 统一 API 封装：自动携带 Authorization: Bearer；401 时清 token 回登录页
+async function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers || {});
+  const token = getToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) { gotoLogin(); throw new Error('unauthorized'); }
+  return res;
+}
+
 async function logout() {
-  await fetch('/auth/logout', {method: 'POST'});
+  try { await api('/auth/logout', { method: 'POST' }); } catch (e) { /* 已跳转 */ }
+  clearToken();
   window.location.href = '/login';
 }
 
 async function init() {
+  if (!getToken()) { window.location.href = '/login?next=/dashboard'; return; }
   try {
-    const res = await fetch('/auth/me');
-    if (!res.ok) { window.location.href = '/login?next=/dashboard'; return; }
+    const res = await api('/auth/me');
+    if (!res.ok) { gotoLogin(); return; }
     const data = await res.json();
     const user = data.user;
     const uid = user.userId || user.id;
@@ -175,14 +195,12 @@ async function init() {
     }
 
     await loadMaterials();
-  } catch (e) {
-    window.location.href = '/login?next=/dashboard';
-  }
+  } catch (e) { /* api() 已在 401 时跳转 */ }
 }
 
 async function loadMaterials() {
   try {
-    const res = await fetch('/materials');
+    const res = await api('/materials');
     const data = await res.json();
     const list = document.getElementById('materialList');
     if (!data.materials || data.materials.length === 0) {
@@ -195,12 +213,38 @@ async function loadMaterials() {
           <div class="name">${escapeHtml(m.filename)}</div>
           <div class="meta">上传者: ${m.uploader_user_id} | 大小: ${formatSize(m.size)} | ${m.mime || ''}</div>
         </div>
-        <a class="download-btn" href="/materials/${m.id}/download">下载</a>
+        <a class="download-btn" href="#" data-id="${m.id}" data-name="${escapeHtml(m.filename)}" onclick="downloadMaterial(event)">下载</a>
       </div>
     `).join('');
   } catch (e) {
     document.getElementById('materialList').innerHTML = '<div class="empty">加载失败</div>';
   }
+}
+
+// 浏览器导航请求无法携带 Authorization 头：下载/查看一律 fetch → blob
+async function downloadMaterial(ev) {
+  const a = ev.target.closest('a');
+  const id = a.dataset.id;
+  const name = a.dataset.name || ('material-' + id + '.txt');
+  try {
+    const res = await api('/materials/' + id + '/download');
+    if (!res.ok) { alert('下载失败: ' + res.status); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const tmp = document.createElement('a');
+    tmp.href = url; tmp.download = name;
+    document.body.appendChild(tmp); tmp.click(); tmp.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+async function openMaterial(id) {
+  try {
+    const res = await api('/materials/' + id + '/download');
+    if (!res.ok) { alert('打开失败: ' + res.status); return; }
+    const blob = await res.blob();
+    window.open(URL.createObjectURL(blob), '_blank');
+  } catch (e) { /* 401 已跳转 */ }
 }
 
 document.getElementById('uploadForm').addEventListener('submit', async (e) => {
@@ -214,7 +258,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
   btn.disabled = true;
   btn.textContent = '上传中...';
   try {
-    const res = await fetch('/materials', {method: 'POST', body: formData});
+    const res = await api('/materials', {method: 'POST', body: formData});
     if (res.ok) {
       const data = await res.json();
       okEl.textContent = '上传成功: ' + data.filename;
@@ -252,7 +296,7 @@ async function doSearch() {
   errEl.textContent = '';
   box.innerHTML = '<div class="empty">检索中...</div>';
   try {
-    const res = await fetch('/search', {
+    const res = await api('/search', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({query, mode})
@@ -273,7 +317,7 @@ async function doSearch() {
         <div class="hit-title">📄 ${escapeHtml(h.materialTitle)} <span style="font-weight:normal;color:#999">#切片${h.chunkIndex}</span></div>
         <div class="hit-meta">字符区间 ${h.charStart}–${h.charEnd}</div>
         <div class="hit-excerpt">${escapeHtml(h.excerpt)}</div>
-        <a href="${escapeHtml(h.materialUrl)}" target="_blank">打开材料 →</a>
+        <a href="#" onclick="openMaterial(${h.materialId}); return false;">打开材料 →</a>
       </div>
     `).join('');
   } catch (e) {
@@ -293,7 +337,7 @@ async function doAsk() {
   ansEl.style.display = 'block';
   ansEl.textContent = '思考中...';
   try {
-    const res = await fetch('/ask', {
+    const res = await api('/ask', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({question})
@@ -307,7 +351,7 @@ async function doAsk() {
     }
     ansEl.textContent = data.answer;
     citeEl.innerHTML = (data.citations || []).map(c =>
-      `<a href="${escapeHtml(c.materialUrl)}" target="_blank">[${c.ref}] ${escapeHtml(c.materialTitle)} #切片${c.chunkIndex}</a>`
+      `<a href="#" onclick="openMaterial(${c.materialId}); return false;">[${c.ref}] ${escapeHtml(c.materialTitle)} #切片${c.chunkIndex}</a>`
     ).join('');
   } catch (e) {
     ansEl.style.display = 'none';
@@ -335,20 +379,19 @@ def login_page():
 
 
 @pages_bp.route("/dashboard", methods=["GET"])
-@auth_required
 def dashboard_page():
-    """Dashboard：材料列表 + 教师上传 + 下载 + 退出。"""
+    """Dashboard 外壳（公开）：前端以 localStorage 中的 Bearer token 认证，
+    无 token 或受保护 API 返回 401 时由 JS 跳转登录页。"""
     return render_template_string(DASHBOARD_PAGE.replace("__STYLE__", STYLE))
 
 
 @pages_bp.route("/", methods=["GET"])
 def index():
-    """根路径重定向到 Dashboard（未登录会被 auth_required 跳转到 /login）。"""
+    """根路径重定向到 Dashboard（前端守卫负责未登录跳转）。"""
     return redirect("/dashboard")
 
 
 @pages_bp.route("/me", methods=["GET"])
-@auth_required
 def me_page():
     """兼容旧入口，重定向到 Dashboard。"""
     return redirect("/dashboard")
