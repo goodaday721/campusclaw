@@ -11,12 +11,16 @@ from app.services import model_gateway, retrieval
 
 NO_MATCH_MESSAGE = retrieval.NO_MATCH_MESSAGE
 
-_SYSTEM_PROMPT = (
-    "你是班级课程资料问答助手。你只能依据下面提供的本班资料切片回答问题，"
+# Grounding rules shared with the lesson-5 chat pipeline: answers must cite
+# the numbered slices and never leave the provided evidence.
+GROUNDING_RULES = (
+    "你只能依据下面提供的本班资料切片回答问题，"
     "不得使用切片之外的任何知识。每条结论后用 [序号] 标注其出处，"
     "序号必须与给出的资料编号一致。若资料不足以回答问题，"
     f"直接回答“{NO_MATCH_MESSAGE}”。回答使用简体中文，保持简短。"
 )
+
+_SYSTEM_PROMPT = "你是班级课程资料问答助手。" + GROUNDING_RULES
 
 
 class AnswerUnavailable(Exception):
@@ -38,7 +42,7 @@ def _sanitize_history(history) -> list[dict]:
     return cleaned[-6:]  # bound context: at most the last few turns
 
 
-def _build_sources_message(question: str, hits: list[dict]) -> str:
+def build_sources_message(question: str, hits: list[dict]) -> str:
     lines = ["资料切片："]
     for idx, hit in enumerate(hits, start=1):
         lines.append(
@@ -87,7 +91,7 @@ def build_answer(
     messages = (
         [{"role": "system", "content": _SYSTEM_PROMPT}]
         + _sanitize_history(history)
-        + [{"role": "user", "content": _build_sources_message(question, hits)}]
+        + [{"role": "user", "content": build_sources_message(question, hits)}]
     )
     try:
         answer_text = model_gateway.chat(config, messages)

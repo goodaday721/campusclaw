@@ -64,6 +64,42 @@ STYLE = """
   .cite-list a { color: var(--pku-red); margin-right: 12px; text-decoration: none; }
   .cite-list a:hover { text-decoration: underline; }
 
+  /* 第5课：解题助手（会话流式对话）+ 教师智能体配置 */
+  .assistant-grid { display: grid; grid-template-columns: 230px 1fr; gap: 14px; }
+  @media (max-width: 720px) { .assistant-grid { grid-template-columns: 1fr; } }
+  .conv-list { display: flex; flex-direction: column; gap: 6px; max-height: 330px; overflow-y: auto; }
+  .conv-item { padding: 9px 11px; border: 1px solid #f0e6e4; border-radius: 6px; font-size: 13px; cursor: pointer; background: #fff; transition: all .15s; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv-item:hover { border-color: var(--pku-red-light); }
+  .conv-item.active { background: var(--pku-red); color: #fff; border-color: var(--pku-red); }
+  .conv-item .conv-agent { display: block; font-size: 11px; opacity: .75; margin-top: 2px; }
+  .chat-box { height: 330px; overflow-y: auto; background: #fdfbfa; border: 1px solid #f0e6e4; border-radius: 6px; padding: 14px; }
+  .msg { display: flex; margin-bottom: 12px; }
+  .msg.user { justify-content: flex-end; }
+  .bubble { max-width: 82%; padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; }
+  .msg.user .bubble { background: var(--pku-red); color: #fff; border-bottom-right-radius: 3px; }
+  .msg.assistant .bubble { background: #fff; border: 1px solid #f0e6e4; border-bottom-left-radius: 3px; }
+  .msg .cites { margin-top: 8px; font-size: 12px; }
+  .msg .cites a { color: var(--pku-red); margin-right: 10px; text-decoration: none; }
+  .msg .cites a:hover { text-decoration: underline; }
+  .msg .skill-tag { display: inline-block; font-size: 11px; color: #8a5a2a; background: #f7ece4; border-radius: 8px; padding: 1px 8px; margin-bottom: 6px; }
+
+  .cfg-row { margin-bottom: 14px; }
+  .cfg-row > label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; font-weight: 600; }
+  .cfg-row textarea, .cfg-row input[type=text], .cfg-row select { width: 100%; padding: 9px 11px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; font-family: inherit; }
+  .cfg-row textarea:focus, .cfg-row input[type=text]:focus { outline: none; border-color: var(--pku-red); box-shadow: 0 0 0 3px rgba(148,7,10,.12); }
+  .btn { background: var(--pku-red); color: #fff; border: none; padding: 7px 18px; border-radius: 4px; cursor: pointer; font-size: 13px; transition: background .2s; }
+  .btn:hover { background: var(--pku-red-dark); }
+  .btn.secondary { background: #fff; color: var(--pku-red); border: 1px solid var(--pku-red); }
+  .btn.secondary:hover { background: #fdf6f5; }
+  .btn.small { padding: 4px 12px; font-size: 12px; }
+  .skill-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed #f0e6e4; font-size: 13px; }
+  .skill-item:last-child { border-bottom: none; }
+  .skill-item .ops { display: flex; gap: 6px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 8px; background: #fbecec; color: var(--pku-red-light); margin-left: 6px; }
+  .tag.on { background: #e8f5ee; color: #1e8e4a; }
+  .checks { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; padding: 6px 0; }
+  .checks label { display: flex; align-items: center; gap: 4px; font-weight: normal; }
+
   .login-box { max-width: 400px; margin: 80px auto; background: #fff; border-radius: 10px; box-shadow: 0 8px 28px rgba(148,7,10,.15); padding: 44px 40px; border-top: 4px solid var(--pku-red); }
   .login-box h2 { text-align: center; margin-bottom: 28px; color: var(--pku-red); letter-spacing: 1px; }
   .login-box label { display: block; margin-bottom: 6px; font-size: 14px; color: #555; }
@@ -168,6 +204,86 @@ DASHBOARD_PAGE = """
       <div class="err-msg" id="askErr"></div>
       <div id="answerText" style="display:none"></div>
       <div class="cite-list" id="citeList"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">🤖 解题助手（流式对话）</div>
+    <div class="card-body">
+      <div class="cfg-row" style="max-width:340px">
+        <label>选择智能体</label>
+        <select id="agentSelect" onchange="onAgentChange()"></select>
+      </div>
+      <div class="assistant-grid">
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <strong style="font-size:13px">我的会话</strong>
+            <button class="btn small" type="button" onclick="newConversation()">+ 新会话</button>
+          </div>
+          <div id="convList" class="conv-list"><div class="empty">加载中...</div></div>
+        </div>
+        <div>
+          <div class="chat-box" id="chatBox"><div class="empty">选择或新建会话后开始提问</div></div>
+          <div class="ask-row" style="margin-top:10px">
+            <input type="text" id="chatInput" placeholder="向解题助手提问（回答前会检索本班资料并给出出处）" disabled>
+            <button type="button" id="chatSendBtn" onclick="sendChatMessage()" disabled>发送</button>
+          </div>
+          <div class="err-msg" id="chatErr"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="configCard" style="display:none">
+    <div class="card-header">🛠 智能体配置（仅教师）</div>
+    <div class="card-body">
+      <div class="cfg-row">
+        <label>班级系统提示词（保存后从下一轮回答生效）</label>
+        <textarea id="promptBody" rows="3"></textarea>
+        <div style="margin-top:6px">
+          <button class="btn" type="button" onclick="savePrompt()">保存提示词</button>
+          <span class="success-msg" id="promptOk"></span>
+          <span class="err-msg" id="promptErr" style="margin:0"></span>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
+      <div class="cfg-row">
+        <label>解题引导技能</label>
+        <div id="skillList"></div>
+      </div>
+      <div class="cfg-row">
+        <label>技能 source 文本（新建或编辑后提交；首个空行后为引导指令正文）</label>
+        <textarea id="skillSource" rows="9" placeholder="名称：方程解题引导&#10;适用条件：一元一次方程&#10;工具：knowledge_search&#10;资料：数学&#10;启用：是&#10;&#10;（空行后写引导指令正文，回答时整段注入）"></textarea>
+        <div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" type="button" onclick="submitSkill(false)">新建技能</button>
+          <button class="btn secondary" type="button" id="skillUpdateBtn" onclick="submitSkill(true)" style="display:none">更新该技能</button>
+          <button class="btn secondary" type="button" id="skillCancelBtn" onclick="resetSkillEditor()" style="display:none">取消编辑</button>
+          <span class="err-msg" id="skillErr" style="margin:0"></span>
+          <span class="success-msg" id="skillOk"></span>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
+      <div class="cfg-row">
+        <label>智能体</label>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;max-width:420px">
+          <select id="agentEditSelect" onchange="loadAgentEditor()"></select>
+          <button class="btn secondary small" type="button" onclick="resetAgentEditor()">新建</button>
+        </div>
+        <label>名称</label>
+        <input type="text" id="agentName" style="margin-bottom:10px">
+        <label>提示词（留空则使用班级提示词）</label>
+        <textarea id="agentPrompt" rows="3" style="margin-bottom:10px"></textarea>
+        <label>绑定技能（启用中的技能将整段注入回答）</label>
+        <div class="checks" id="agentSkillChecks"></div>
+        <label>限定检索材料（不选 = 检索本班全部）</label>
+        <div class="checks" id="agentMaterialChecks"></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="agentEnabled" checked> 启用该智能体（学生可见）</label>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" type="button" onclick="submitAgent()">保存智能体</button>
+          <span class="err-msg" id="agentErr" style="margin:0"></span>
+          <span class="success-msg" id="agentOk"></span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -384,6 +500,388 @@ document.getElementById('searchQuery').addEventListener('keydown', e => {
 document.getElementById('askQuestion').addEventListener('keydown', e => {
   if (e.key === 'Enter') doAsk();
 });
+
+// ============ 第5课：解题助手（SSE 流式对话） ============
+let agentsCache = [];
+let currentConvId = null;
+
+async function initAssistant() {
+  try {
+    const res = await api('/api/agents');
+    const data = await res.json();
+    agentsCache = data.agents || [];
+    const sel = document.getElementById('agentSelect');
+    if (agentsCache.length === 0) {
+      sel.innerHTML = '<option value="">暂无可用智能体</option>';
+      document.getElementById('convList').innerHTML = '<div class="empty">教师尚未配置智能体</div>';
+      return;
+    }
+    sel.innerHTML = agentsCache.map(a =>
+      `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+    await loadConversations();
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+function onAgentChange() {
+  loadConversations();
+}
+
+async function loadConversations() {
+  const box = document.getElementById('convList');
+  try {
+    const res = await api('/api/conversations');
+    const data = await res.json();
+    const convs = data.conversations || [];
+    if (convs.length === 0) {
+      box.innerHTML = '<div class="empty" style="padding:18px 0">还没有会话<br>点击上方"+ 新会话"</div>';
+      return;
+    }
+    box.innerHTML = convs.map(c => `
+      <div class="conv-item ${c.id === currentConvId ? 'active' : ''}" onclick="openConversation(${c.id})">
+        ${escapeHtml(c.title || '(未命名会话)')}
+        <span class="conv-agent">${escapeHtml(c.agentName || '')}</span>
+      </div>`).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="empty">加载失败</div>';
+  }
+}
+
+async function newConversation() {
+  const agentId = parseInt(document.getElementById('agentSelect').value, 10);
+  if (!agentId) return;
+  try {
+    const res = await api('/api/conversations', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: agentId})
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('创建会话失败: ' + (d.error || res.status)); return; }
+    await loadConversations();
+    const data = await res.json();
+    await openConversation(data.conversation.id);
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+function renderMessage(m) {
+  const chatBox = document.getElementById('chatBox');
+  const div = document.createElement('div');
+  div.className = 'msg ' + m.role;
+  let inner = '<div class="bubble">' + escapeHtml(m.content) + '</div>';
+  const cites = (m.role === 'assistant' && m.citations || []);
+  if (cites.length > 0) {
+    inner += '<div class="cites">' + cites.map(c =>
+      `<a href="#" onclick="openMaterial(${c.materialId}); return false;">[${c.ref}] ${escapeHtml(c.materialTitle)} #切片${c.chunkIndex}</a>`
+    ).join('') + '</div>';
+  }
+  if (m.role === 'assistant' && m.skillName) {
+    inner = '<div><span class="skill-tag">技能: ' + escapeHtml(m.skillName) + '</span></div>' + inner;
+  }
+  div.innerHTML = '<div>' + inner + '</div>';
+  chatBox.appendChild(div);
+  chatBox.scrollTop = chatBox.scrollHeight;
+  return div;
+}
+
+async function openConversation(convId) {
+  currentConvId = convId;
+  const chatBox = document.getElementById('chatBox');
+  chatBox.innerHTML = '<div class="empty">加载中...</div>';
+  try {
+    const res = await api('/api/conversations/' + convId);
+    if (!res.ok) { chatBox.innerHTML = '<div class="empty">会话不存在或无权访问</div>'; return; }
+    const data = await res.json();
+    chatBox.innerHTML = '';
+    (data.messages || []).forEach(renderMessage);
+    if (!(data.messages || []).length) {
+      chatBox.innerHTML = '<div class="empty">向解题助手提出你的问题吧</div>';
+    }
+    document.getElementById('chatInput').disabled = false;
+    document.getElementById('chatSendBtn').disabled = false;
+    await loadConversations();
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+async function sendChatMessage() {
+  if (!currentConvId) return;
+  const input = document.getElementById('chatInput');
+  const sendBtn = document.getElementById('chatSendBtn');
+  const errEl = document.getElementById('chatErr');
+  const content = input.value.trim();
+  if (!content) return;
+  errEl.textContent = '';
+  input.value = '';
+  input.disabled = true; sendBtn.disabled = true; sendBtn.textContent = '回答中...';
+  const chatBox = document.getElementById('chatBox');
+  if (chatBox.querySelector('.empty')) chatBox.innerHTML = '';
+  renderMessage({role: 'user', content});
+  const asst = renderMessage({role: 'assistant', content: '', citations: []});
+  const bubble = asst.querySelector('.bubble');
+  bubble.textContent = '思考中...';
+  let text = '';
+  let interrupted = false;
+  try {
+    const res = await api('/api/conversations/' + currentConvId + '/messages', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({content})
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      asst.remove();
+      errEl.textContent = '发送失败: ' + (d.error || res.status) +
+        (res.status === 503 ? '（检索/模型网关暂不可用）' : '') +
+        (res.status === 404 ? '（智能体已停用或会话不存在）' : '');
+      input.disabled = false; sendBtn.disabled = false; sendBtn.textContent = '发送';
+      return;
+    }
+    // 读取 SSE 流：event meta（citations）→ delta*（增量）→ done
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let citations = [];
+    let done = false;
+    const handleFrame = (frame) => {
+      const lines = frame.split('\\n');
+      const evLine = lines.find(l => l.startsWith('event:'));
+      const dataLine = lines.find(l => l.startsWith('data:'));
+      if (!dataLine) return;
+      let payload;
+      try { payload = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return; }
+      const ev = evLine ? evLine.slice(6).trim() : '';
+      if (ev === 'meta') {
+        citations = payload.citations || [];
+      } else if (ev === 'delta') {
+        if (text === '') bubble.textContent = '';
+        text += payload.text || '';
+        bubble.textContent = text;
+        chatBox.scrollTop = chatBox.scrollHeight;
+      } else if (ev === 'done') {
+        done = true;
+      }
+    };
+    while (true) {
+      const {value, done: rdDone} = await reader.read();
+      if (rdDone) break;
+      buf += decoder.decode(value, {stream: true});
+      const frames = buf.split('\\n\\n');
+      buf = frames.pop();
+      frames.forEach(handleFrame);
+    }
+    if (buf.trim()) handleFrame(buf);
+    if (!done) {
+      interrupted = true;
+      bubble.textContent = text + (text ? '\\n\\n（回答中断）' : '');
+      if (!text) asst.remove();
+    }
+    if (citations.length > 0 && asst.parentNode) {
+      asst.querySelector('.bubble').insertAdjacentHTML('afterend', '<div class="cites">' +
+        citations.map(c =>
+          `<a href="#" onclick="openMaterial(${c.materialId}); return false;">[${c.ref}] ${escapeHtml(c.materialTitle)} #切片${c.chunkIndex}</a>`
+        ).join('') + '</div>');
+    }
+  } catch (e) {
+    if (asst.parentNode) asst.remove();
+    errEl.textContent = '发送失败: 网络错误';
+  }
+  input.disabled = false; sendBtn.disabled = false; sendBtn.textContent = '发送';
+  await loadConversations();
+}
+
+document.getElementById('chatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendChatMessage();
+});
+
+// ============ 第5课：教师智能体配置 ============
+let skillsCache = [];
+let materialsCache = [];
+let editingSkillId = null;
+let editingAgentId = null;
+
+async function loadConfig() {
+  try {
+    const [promptRes, skillRes, matRes, agentRes] = await Promise.all([
+      api('/api/prompt'), api('/api/skills'), api('/materials'), api('/api/agents')
+    ]);
+    const promptData = await promptRes.json();
+    document.getElementById('promptBody').value = promptData.body || '';
+    skillsCache = (await skillRes.json()).skills || [];
+    materialsCache = (await matRes.json()).materials || [];
+    renderSkillList();
+    const agents = (await agentRes.json()).agents || [];
+    agentsCache = agents;
+    const sel = document.getElementById('agentEditSelect');
+    sel.innerHTML = '<option value="">— 新建智能体 —</option>' +
+      agents.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+    renderBindingChecks({skill_ids: [], material_ids: []});
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+function renderSkillList() {
+  const box = document.getElementById('skillList');
+  if (!skillsCache.length) { box.innerHTML = '<div class="empty" style="padding:12px 0">暂无技能，用下方文本框创建</div>'; return; }
+  box.innerHTML = skillsCache.map(s => `
+    <div class="skill-item">
+      <div>${escapeHtml(s.name)}
+        <span class="tag ${s.enabled ? 'on' : ''}">${s.enabled ? '启用中' : '已停用'}</span>
+        ${s.subject ? `<span class="tag">${escapeHtml(s.subject)}</span>` : ''}
+      </div>
+      <div class="ops">
+        <button class="btn secondary small" type="button" onclick="editSkill(${s.id})">编辑</button>
+        <button class="btn secondary small" type="button" onclick="deleteSkill(${s.id})">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+function renderBindingChecks(agent) {
+  document.getElementById('agentSkillChecks').innerHTML = skillsCache
+    .filter(s => s.enabled || (agent.skill_ids || []).includes(s.id))
+    .map(s => `<label><input type="checkbox" class="skill-check" value="${s.id}" ${(agent.skill_ids || []).includes(s.id) ? 'checked' : ''}> ${escapeHtml(s.name)}${s.enabled ? '' : '（已停用）'}</label>`)
+    .join('') || '<span style="color:#aa9999;font-size:12px">暂无技能，先在上方创建</span>';
+  document.getElementById('agentMaterialChecks').innerHTML = materialsCache
+    .map(m => `<label><input type="checkbox" class="material-check" value="${m.id}" ${(agent.material_ids || []).includes(m.id) ? 'checked' : ''}> ${escapeHtml(m.filename)}</label>`)
+    .join('') || '<span style="color:#aa9999;font-size:12px">本班暂无材料</span>';
+}
+
+async function savePrompt() {
+  const errEl = document.getElementById('promptErr');
+  const okEl = document.getElementById('promptOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  try {
+    const res = await api('/api/prompt', {
+      method: 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({body: document.getElementById('promptBody').value})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) { okEl.textContent = '已保存，从下一轮回答生效'; }
+    else { errEl.textContent = '保存失败: ' + (d.error || res.status); }
+  } catch (e) { errEl.textContent = '保存失败: 网络错误'; }
+}
+
+function editSkill(id) {
+  const s = skillsCache.find(x => x.id === id);
+  if (!s) return;
+  editingSkillId = id;
+  document.getElementById('skillSource').value = s.source;
+  document.getElementById('skillUpdateBtn').style.display = '';
+  document.getElementById('skillCancelBtn').style.display = '';
+  document.getElementById('skillErr').textContent = '';
+  document.getElementById('skillOk').textContent = '';
+  document.getElementById('skillSource').scrollIntoView({behavior: 'smooth', block: 'center'});
+}
+
+function resetSkillEditor() {
+  editingSkillId = null;
+  document.getElementById('skillSource').value = '';
+  document.getElementById('skillUpdateBtn').style.display = 'none';
+  document.getElementById('skillCancelBtn').style.display = 'none';
+  document.getElementById('skillErr').textContent = '';
+  document.getElementById('skillOk').textContent = '';
+}
+
+async function submitSkill(isUpdate) {
+  const errEl = document.getElementById('skillErr');
+  const okEl = document.getElementById('skillOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  const source = document.getElementById('skillSource').value;
+  try {
+    const res = isUpdate
+      ? await api('/api/skills/' + editingSkillId, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source})})
+      : await api('/api/skills', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({source})});
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      okEl.textContent = isUpdate ? '已更新' : '已创建: ' + (d.skill ? d.skill.name : '');
+      resetSkillEditor();
+      await loadConfig();
+    } else {
+      errEl.textContent = (isUpdate ? '更新失败: ' : '创建失败: ') + (d.error || res.status);
+    }
+  } catch (e) { errEl.textContent = '提交失败: 网络错误'; }
+}
+
+async function deleteSkill(id) {
+  if (!confirm('删除该技能？已绑定它的智能体会同时解除绑定。')) return;
+  try {
+    const res = await api('/api/skills/' + id, {method: 'DELETE'});
+    if (res.ok) { await loadConfig(); }
+    else { const d = await res.json().catch(() => ({})); alert('删除失败: ' + (d.error || res.status)); }
+  } catch (e) { /* 401 已跳转 */ }
+}
+
+function loadAgentEditor() {
+  const idVal = document.getElementById('agentEditSelect').value;
+  document.getElementById('agentErr').textContent = '';
+  document.getElementById('agentOk').textContent = '';
+  if (!idVal) { resetAgentEditor(); return; }
+  const a = agentsCache.find(x => x.id === parseInt(idVal, 10));
+  if (!a) return;
+  editingAgentId = a.id;
+  document.getElementById('agentName').value = a.name;
+  document.getElementById('agentPrompt').value = a.prompt || '';
+  document.getElementById('agentEnabled').checked = !!a.enabled;
+  renderBindingChecks(a);
+}
+
+function resetAgentEditor() {
+  editingAgentId = null;
+  document.getElementById('agentEditSelect').value = '';
+  document.getElementById('agentName').value = '';
+  document.getElementById('agentPrompt').value = '';
+  document.getElementById('agentEnabled').checked = true;
+  document.getElementById('agentErr').textContent = '';
+  document.getElementById('agentOk').textContent = '';
+  renderBindingChecks({skill_ids: [], material_ids: []});
+}
+
+async function submitAgent() {
+  const errEl = document.getElementById('agentErr');
+  const okEl = document.getElementById('agentOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  const name = document.getElementById('agentName').value.trim();
+  if (!name) { errEl.textContent = '请填写智能体名称'; return; }
+  const skill_ids = Array.from(document.querySelectorAll('.skill-check:checked')).map(x => parseInt(x.value, 10));
+  const material_ids = Array.from(document.querySelectorAll('.material-check:checked')).map(x => parseInt(x.value, 10));
+  const payload = {
+    name,
+    prompt: document.getElementById('agentPrompt').value,
+    skill_ids, material_ids,
+    enabled: document.getElementById('agentEnabled').checked
+  };
+  try {
+    const res = editingAgentId
+      ? await api('/api/agents/' + editingAgentId, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
+      : await api('/api/agents', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      okEl.textContent = '已保存';
+      resetAgentEditor();
+      await loadConfig();
+      await initAssistant();
+    } else {
+      errEl.textContent = '保存失败: ' + (d.error || res.status);
+    }
+  } catch (e) { errEl.textContent = '保存失败: 网络错误'; }
+}
+
+async function init() {
+  if (!getToken()) { window.location.href = '/login?next=/dashboard'; return; }
+  try {
+    const res = await api('/auth/me');
+    if (!res.ok) { gotoLogin(); return; }
+    const data = await res.json();
+    const user = data.user;
+    const uid = user.userId || user.id;
+    document.getElementById('username').textContent = user.role === 'teacher' ? '👨‍🏫 ' + uid + '号教师' : '👨‍🎓 ' + uid + '号学生';
+    document.getElementById('role').textContent = user.role === 'teacher' ? '教师' : '学生';
+
+    // 上传区与智能体配置仅教师可见
+    if (user.role === 'teacher') {
+      document.getElementById('uploadArea').style.display = 'block';
+      document.getElementById('configCard').style.display = 'block';
+      await loadConfig();
+    }
+
+    await loadMaterials();
+    await initAssistant();
+  } catch (e) { /* api() 已在 401 时跳转 */ }
+}
 
 init();
 </script>

@@ -229,6 +229,113 @@ def run_with_test_client():
     r = sa.post(f"/materials/{uploaded_id}/reindex", json={"strategy": "auto"})
     check("student reindex 403", r.status_code == 403, f"status={r.status_code}")
 
+    # 10.5 Lesson-5 assistant: teacher config -> student streaming chat (fake gateway)
+    print("  --- Lesson 5: assistant streaming chat ---")
+    model_gateway.chat_stream = lambda cfg, messages: iter(
+        ["根据班级资料", "[1]，e2e流式引导回答。"]
+    )
+    sb, _ = login_new("student_b", "student_b_pass")
+
+    def parse_sse_text(text: str):
+        frames = []
+        for block in text.split("\n\n"):
+            ev = data = None
+            for line in block.splitlines():
+                if line.startswith("event:"):
+                    ev = line[6:].strip()
+                elif line.startswith("data:"):
+                    data = line[5:].strip()
+            if ev:
+                try:
+                    frames.append((ev, json.loads(data) if data else None))
+                except ValueError:
+                    frames.append((ev, data))
+        return frames
+
+    r = ta.put("/api/prompt", json={"body": "A班e2e提示词：只依据本班资料引导，不给答案。"})
+    check("teacher prompt PUT 200", r.status_code == 200, f"status={r.status_code}")
+    r = ta.get("/api/prompt")
+    check("prompt PUT persisted", r.status_code == 200
+          and r.get_json()["body"] == "A班e2e提示词：只依据本班资料引导，不给答案。")
+    r = sa.put("/api/prompt", json={"body": "学生篡改"})
+    check("student prompt PUT 403", r.status_code == 403, f"status={r.status_code}")
+
+    skill_source = (
+        "名称：e2e引导技能\n适用条件：e2e\n工具：Socratic提问\n"
+        "资料：班级材料\n启用：是\n\n引导正文，不给最终答案。"
+    )
+    r = ta.post("/api/skills", json={"source": skill_source})
+    check("teacher skill create 201", r.status_code == 201, f"status={r.status_code}")
+    skill_id = r.get_json()["skill"]["id"]
+    r = sa.post("/api/skills", json={"source": skill_source})
+    check("student skill create 403", r.status_code == 403, f"status={r.status_code}")
+
+    r = ta.post(
+        "/api/agents",
+        json={"name": "e2e解题助手", "prompt": "你是e2e解题助手，只引导不给答案。",
+              "skill_ids": [skill_id], "material_ids": [], "enabled": True},
+    )
+    check("teacher agent create 201", r.status_code == 201, f"status={r.status_code}")
+    agent_id = r.get_json()["agent"]["id"]
+
+    r = sa.post("/api/conversations", json={"agent_id": agent_id})
+    check("student conversation create 201", r.status_code == 201, f"status={r.status_code}")
+    cid = r.get_json()["conversation"]["id"]
+    check("cross-class conversation 404",
+          sb.post("/api/conversations", json={"agent_id": agent_id}).status_code == 404)
+    check("cross-class conversation detail 404", sb.get(f"/api/conversations/{cid}").status_code == 404)
+
+    r = sa.post(f"/api/conversations/{cid}/messages", json={"content": "lesson content 是什么？"})
+    check("SSE message 200", r.status_code == 200, f"status={r.status_code}")
+    check("SSE content type", r.content_type.startswith("text/event-stream"))
+    frames = parse_sse_text(r.get_data(as_text=True))  # consume -> persists
+    kinds = [name for name, _ in frames]
+    check(
+        "SSE frame order meta->delta*->done",
+        kinds[0] == "meta" and kinds[-1] == "done" and all(k == "delta" for k in kinds[1:-1]),
+        str(kinds),
+    )
+    meta = frames[0][1]
+    check("SSE meta carries citations", bool(meta.get("citations")))
+    answer = "".join(d["text"] for name, d in frames if name == "delta")
+    check("streamed answer assembled", answer == "根据班级资料[1]，e2e流式引导回答。", answer)
+    rows = query_one(
+        db,
+        "SELECT (SELECT COUNT(*) FROM messages WHERE conversation_id=%s) AS n, "
+        "(SELECT role FROM messages WHERE conversation_id=%s ORDER BY id DESC LIMIT 1) AS last_role",
+        (cid, cid),
+    )
+    check("streamed turn persisted (user+assistant)", rows["n"] == 2 and rows["last_role"] == "assistant")
+    assistant_row = query_one(
+        db,
+        "SELECT citations, skill_name FROM messages WHERE conversation_id=%s "
+        "AND role='assistant' ORDER BY id DESC LIMIT 1",
+        (cid,),
+    )
+    check(
+        "assistant row citations + skill_name",
+        json.loads(assistant_row["citations"]) and assistant_row["skill_name"] == "e2e引导技能",
+        str(assistant_row),
+    )
+
+    # Zero-hit: fixed message, gateway never called (threshold blocks vector noise)
+    config.vector_threshold = 0.99
+    before_n = query_one(db, "SELECT COUNT(*) AS n FROM messages WHERE conversation_id=%s", (cid,))["n"]
+    r = sa.post(f"/api/conversations/{cid}/messages", json={"content": "鴗鴘鶙鶣鶤鶥鶧"})
+    frames = parse_sse_text(r.get_data(as_text=True))
+    zero_answer = "".join(d["text"] for name, d in frames if name == "delta")
+    check(
+        "zero-hit fixed message without model call",
+        r.status_code == 200 and frames[0][1]["citations"] == []
+        and zero_answer == "资料中未找到相关内容" and frames[-1][0] == "done",
+    )
+    after_n = query_one(db, "SELECT COUNT(*) AS n FROM messages WHERE conversation_id=%s", (cid,))["n"]
+    check("zero-hit turn persisted too", after_n == before_n + 2)
+    config.vector_threshold = 0.0
+
+    check("cross-class message 404",
+          sb.post(f"/api/conversations/{cid}/messages", json={"content": "hi"}).status_code == 404)
+
     # 11. Repeated startup no duplicate seed
     counts_before = {
         t: query_one(db, f"SELECT count(*) AS n FROM {t}")["n"]
@@ -369,6 +476,49 @@ def run_http(base_url="http://localhost:8080"):
     check("ask 200 or 503(gateway unconfigured)", s in (200, 503), f"status={s}")
     if s == 200 and isinstance(d, dict):
         check("ask response shape", "answer" in d and "citations" in d)
+
+    # 8. Lesson-5 assistant over real HTTP (SSE/gateway items accept 503 when
+    #    the gateway key is unconfigured; config/isolation checks always run).
+    sb = make_session()
+    login_http(sb, "student_b", "student_b_pass")
+    s, d = req(ta, "GET", "/api/prompt")
+    check("prompt GET 200", s == 200 and isinstance(d, dict) and "body" in d, f"status={s}")
+    s, d = req(ta, "PUT", "/api/prompt", {"body": (d or {}).get("body") or "默认提示词"})
+    check("teacher prompt PUT 200", s == 200, f"status={s}")
+    s, _ = req(sa, "PUT", "/api/prompt", {"body": "学生篡改"})
+    check("student prompt PUT 403", s == 403, f"status={s}")
+
+    skill_source = (
+        "名称：e2e引导技能\n适用条件：e2e\n工具：Socratic提问\n"
+        "资料：班级材料\n启用：是\n\n引导正文，不给最终答案。"
+    )
+    s, d = req(ta, "POST", "/api/skills", {"source": skill_source})
+    check("teacher skill create 201", s == 201, f"status={s}")
+    s, d = req(sa, "GET", "/api/skills")
+    check(
+        "student skills list only enabled",
+        s == 200 and isinstance(d, dict)
+        and all(skill.get("enabled") for skill in d.get("skills", [])),
+    )
+    s, d = req(sa, "GET", "/api/agents")
+    agent_id = d["agents"][0]["id"] if s == 200 and isinstance(d, dict) and d.get("agents") else None
+    check("student agents list has enabled agent", agent_id is not None)
+
+    s, d = req(sa, "POST", "/api/conversations", {"agent_id": agent_id})
+    check("conversation create 201", s == 201, f"status={s}")
+    cid = d.get("conversation", {}).get("id") if isinstance(d, dict) else None
+    if cid:
+        s, _ = req(sb, "GET", f"/api/conversations/{cid}")
+        check("cross-class conversation 404", s == 404, f"status={s}")
+        s, body = req(sa, "POST", f"/api/conversations/{cid}/messages", {"content": "lesson"})
+        if s == 200:
+            text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+            check(
+                "SSE frames meta->delta->done",
+                "event: meta" in text and "event: delta" in text and "event: done" in text,
+            )
+        else:
+            check("SSE 503(gateway unconfigured) accepted", s == 503, f"status={s}")
 
     # Summary
     passed = sum(1 for _, s, _ in results if s == "PASS")

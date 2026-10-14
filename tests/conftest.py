@@ -49,6 +49,7 @@ MIGRATIONS = [
     "001_initial_schema.sql",
     "002_sessions_knowledge.sql",
     "003_knowledge_chunks.sql",
+    "004_assistant.sql",
 ]
 
 # Deterministic offline fake for the embedding gateway: normalized bag of
@@ -162,6 +163,20 @@ def chat_spy(monkeypatch):
         return "根据班级资料[1]，这是测试回答。"
 
     monkeypatch.setattr(model_gateway, "chat", _fake_chat)
+    return calls
+
+
+@pytest.fixture()
+def chat_stream_spy(monkeypatch):
+    """Record chat_stream calls; yield deterministic cited deltas."""
+    calls = []
+
+    def _fake_chat_stream(config, messages):
+        calls.append(messages)
+        for piece in ["根据班级资料", "[1]，这是", "引导式测试回答。"]:
+            yield piece
+
+    monkeypatch.setattr(model_gateway, "chat_stream", _fake_chat_stream)
     return calls
 
 
