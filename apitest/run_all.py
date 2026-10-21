@@ -172,6 +172,16 @@ def render_report(results: list[dict], total_seconds: float) -> None:
     REPORT_PATH.write_text(report, encoding="utf-8")
 
 
+def entry_path(case: dict, ctx: dict) -> str:
+    """Resolve the display path; a callable may need ctx keys that earlier
+    cases have not produced yet — those cases get skipped by skip_if, so any
+    resolution error here just degrades the report label."""
+    try:
+        return case["path"](ctx) if callable(case["path"]) else case["path"]
+    except Exception:  # noqa: BLE001 — label only
+        return "(ctx pending)"
+
+
 def main() -> int:
     cases = discover_cases()
     ctx: dict = {"tokens": {}, "base_url": BASE_URL}
@@ -190,7 +200,7 @@ def main() -> int:
         entry = {
             "name": name,
             "method": method,
-            "path": case["path"](ctx) if callable(case["path"]) else case["path"],
+            "path": entry_path(case, ctx),
             "status": "PASS",
             "detail": "",
             "seconds": 0.0,

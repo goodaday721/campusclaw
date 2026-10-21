@@ -12,6 +12,7 @@ from app.middleware.auth import auth_required
 from app.middleware.role import role_required
 from app.repositories import skills as skills_repo
 from app.services import skill_source
+from app.services.mcp_service import ReferenceError_, validate_reference
 from app.services.skill_source import SkillSourceError
 
 skills_bp = Blueprint("api_skills", __name__)
@@ -43,6 +44,16 @@ def _parse_body():
         return None, (jsonify({"error": str(exc)}), 400)
 
 
+def _validate_tools(conn, class_id: int, fields: dict):
+    """Config-time MCP reference checks; returns an error response or None."""
+    for tool in fields.get("tools") or []:
+        try:
+            validate_reference(conn, class_id, tool)
+        except ReferenceError_ as exc:
+            return jsonify({"error": str(exc)}), 400
+    return None
+
+
 @skills_bp.route("/api/skills", methods=["GET"])
 @auth_required
 def list_skills():
@@ -66,6 +77,9 @@ def create_skill():
         return error
     conn = get_connection(current_app.config["DB"])
     try:
+        error = _validate_tools(conn, g.current_user["classId"], fields)
+        if error:
+            return error
         skill_id = skills_repo.create(conn, g.current_user["classId"], fields)
         conn.commit()
         created = skills_repo.find(conn, skill_id, g.current_user["classId"])
@@ -86,6 +100,9 @@ def update_skill(skill_id: int):
     try:
         if skills_repo.find(conn, skill_id, class_id) is None:
             return jsonify({"error": "not found"}), 404
+        error = _validate_tools(conn, class_id, fields)
+        if error:
+            return error
         skills_repo.update(conn, skill_id, fields)
         conn.commit()
         updated = skills_repo.find(conn, skill_id, class_id)

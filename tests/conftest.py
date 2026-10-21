@@ -50,6 +50,7 @@ MIGRATIONS = [
     "002_sessions_knowledge.sql",
     "003_knowledge_chunks.sql",
     "004_assistant.sql",
+    "005_mcp.sql",
 ]
 
 # Deterministic offline fake for the embedding gateway: normalized bag of
@@ -177,6 +178,122 @@ def chat_stream_spy(monkeypatch):
             yield piece
 
     monkeypatch.setattr(model_gateway, "chat_stream", _fake_chat_stream)
+    return calls
+
+
+# ---- lesson 6: MCP fakes --------------------------------------------------
+
+FAKE_MCP_TOOLS = [
+    {
+        "name": "unit_convert",
+        "description": "单位换算工具。凡涉及单位换算必须调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "number"},
+                "from_unit": {"type": "string"},
+                "to_unit": {"type": "string"},
+            },
+            "required": ["value", "from_unit", "to_unit"],
+        },
+    },
+    {
+        "name": "formula_hint",
+        "description": "按学生的问题给出公式或步骤提示。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+]
+
+
+@pytest.fixture()
+def mcp_client_spy(monkeypatch):
+    """Offline fake MCP client: records initialize/list_tools/call_tool.
+
+    call_tool answers unit_convert with a deterministic conversion line and
+    formula_hint with a fixed hint; unknown tools raise McpToolError.
+    """
+    from app.services import mcp_client
+
+    calls = {"initialize": [], "list_tools": [], "call_tool": []}
+
+    def _init(base_url, token, config):
+        calls["initialize"].append({"base_url": base_url, "token": token})
+        return {"protocolVersion": "2024-11-05"}
+
+    def _list(base_url, token, config):
+        calls["list_tools"].append({"base_url": base_url, "token": token})
+        return FAKE_MCP_TOOLS
+
+    def _call(base_url, token, tool_name, arguments, config):
+        calls["call_tool"].append(
+            {"tool": tool_name, "arguments": arguments, "token": token}
+        )
+        if tool_name == "unit_convert":
+            return (
+                f"{arguments.get('value')} {arguments.get('from_unit')} = "
+                f"3000 {arguments.get('to_unit')}（进率 1000）。"
+            )
+        if tool_name == "formula_hint":
+            return "去括号提示：系数要乘到括号内每一项。"
+        raise mcp_client.McpToolError(f"未知工具：{tool_name}")
+
+    monkeypatch.setattr(mcp_client, "initialize", _init)
+    monkeypatch.setattr(mcp_client, "list_tools", _list)
+    monkeypatch.setattr(mcp_client, "call_tool", _call)
+    return calls
+
+
+def _connect_first_server(teacher: "BearerClient") -> dict:
+    """Connect the seeded campus-tools server via the API (fake client)."""
+    resp = teacher.get("/api/mcp/servers")
+    servers = resp.get_json()["servers"]
+    assert servers, "seeded MCP server missing"
+    resp = teacher.post(f"/api/mcp/servers/{servers[0]['id']}/connect")
+    assert resp.status_code == 200, resp.get_json()
+    return resp.get_json()
+
+
+@pytest.fixture()
+def connected_server(teacher_a, mcp_client_spy):
+    """Teacher A's seeded MCP server, connected via the API (offline fake)."""
+    return _connect_first_server(teacher_a)
+
+
+@pytest.fixture()
+def chat_with_tools_spy(monkeypatch):
+    """Fake model_gateway.chat_with_tools.
+
+    Behavior: the FIRST call returns a unit_convert tool_call proposal (with
+    the value from the last user message when parseable, else 3), the SECOND
+    returns no tool calls (model done proposing). Records every call.
+    """
+    calls = []
+
+    def _fake(config, messages, tools):
+        calls.append({"messages": [dict(m) for m in messages], "tools": tools})
+        if len(calls) == 1:
+            value = 3
+            try:
+                value = float(messages[-1]["content"].split("千克")[0].split()[-1])
+            except (ValueError, IndexError):
+                pass
+            return {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "unit_convert",
+                        "arguments": {"value": value, "from_unit": "千克", "to_unit": "克"},
+                    }
+                ],
+            }
+        return {"content": "回答完成。", "tool_calls": None}
+
+    monkeypatch.setattr(model_gateway, "chat_with_tools", _fake)
     return calls
 
 

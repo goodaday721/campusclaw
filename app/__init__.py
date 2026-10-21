@@ -15,6 +15,7 @@ MIGRATIONS = [
     "002_sessions_knowledge.sql",
     "003_knowledge_chunks.sql",
     "004_assistant.sql",
+    "005_mcp.sql",
 ]
 
 # DB readiness retry: depends_on only orders container start, it does NOT wait
@@ -59,6 +60,7 @@ def create_app(config: Config | None = None) -> Flask:
     from app.routes.api_skills import skills_bp
     from app.routes.api_agents import agents_bp
     from app.routes.api_conversations import conversations_bp
+    from app.routes.api_mcp import mcp_bp
     from app.routes.api_docs import docs_bp
 
     app.register_blueprint(health_bp)
@@ -71,6 +73,7 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(skills_bp)
     app.register_blueprint(agents_bp)
     app.register_blueprint(conversations_bp)
+    app.register_blueprint(mcp_bp)
     app.register_blueprint(docs_bp)
 
     return app

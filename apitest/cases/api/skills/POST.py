@@ -4,7 +4,7 @@ from helpers import db_query_one
 SOURCE = (
     "名称：apitest冒烟技能\n"
     "适用条件：学生在解析几何题目卡住时\n"
-    "工具：Socratic提问\n"
+    "工具：knowledge_search\n"
     "资料：班级解析几何讲义\n"
     "启用：是\n"
     "\n"

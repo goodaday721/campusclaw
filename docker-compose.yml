@@ -54,6 +54,15 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
+  # Self-built MCP tool server for lesson 6. Internal only — reachable from
+  # api as http://mcp-demo:8090. The Bearer token comes from MCP_AUTH_TOKEN
+  # in the local .env (never committed, never baked into the image).
+  mcp-demo:
+    build: ./mcp-server
+    environment:
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    restart: unless-stopped
+
 volumes:
   mysql_data:
   qdrant_data:

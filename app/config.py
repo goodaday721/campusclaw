@@ -51,6 +51,15 @@ class Config:
         self.gateway_timeout_connect = float(source.get("GATEWAY_TIMEOUT_CONNECT", "5"))
         self.gateway_timeout_read = float(source.get("GATEWAY_TIMEOUT_READ", "30"))
 
+        # MCP tool servers (lesson 6). Slightly tighter than the LLM gateway:
+        # tool calls are small round trips.
+        self.mcp_timeout_connect = float(source.get("MCP_TIMEOUT_CONNECT", "3"))
+        self.mcp_timeout_read = float(source.get("MCP_TIMEOUT_READ", "15"))
+        # Tool-loop gates (lesson 6): rounds cap the chain depth, total_calls
+        # caps the cumulative usage of one question.
+        self.mcp_max_rounds = int(source.get("MCP_MAX_ROUNDS", "3"))
+        self.mcp_max_calls = int(source.get("MCP_MAX_CALLS", "5"))
+
         # Retrieval tuning (lesson-4 fixed values, overridable for tests).
         self.vector_threshold = float(source.get("RETRIEVAL_VECTOR_THRESHOLD", "0.35"))
         self.rrf_k = float(source.get("RRF_K", "60"))

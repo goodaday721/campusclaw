@@ -4,6 +4,8 @@ Agents bind skills and materials via join tables; material_ids empty means
 "search the whole class library". All queries are class-scoped; callers own
 the transaction.
 """
+import json
+
 import pymysql
 
 
@@ -61,13 +63,24 @@ def skills_for_agent(
     """Enabled skills bound to the agent, in binding order (chat injection)."""
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT s.id, s.name, s.description, s.enabled FROM agent_skills ask "
+            "SELECT s.id, s.name, s.description, s.enabled, s.tools FROM agent_skills ask "
             "JOIN skills s ON s.id = ask.skill_id "
             "WHERE ask.agent_id = %s AND s.enabled = 1 ORDER BY ask.skill_id",
             (agent_id,),
         )
         rows = cur.fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        row = dict(r)
+        raw = row.get("tools")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = []
+        row["tools"] = raw or []
+        out.append(row)
+    return out
 
 
 def material_ids_for_agent(

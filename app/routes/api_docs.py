@@ -56,11 +56,12 @@ _OPENAPI = {
     "openapi": "3.0.3",
     "info": {
         "title": "CampusClaw API",
-        "version": "5.0.0",
+        "version": "6.0.0",
         "description": (
-            "班级课程资料问答与解题助手。第 1-4 课的登录/材料/检索/问答端点 "
-            "与第 5 课的提示词/技能/智能体/流式会话端点（/api/ 前缀）。"
-            "除公开端点外均需 Authorization: Bearer <JWT>。"
+            "班级课程资料问答与解题助手。第 1-4 课的登录/材料/检索/问答端点、"
+            "第 5 课的提示词/技能/智能体/流式会话端点与第 6 课的 MCP 工具接入"
+            "端点（/api/ 前缀）。除公开端点外均需 Authorization: Bearer <JWT>；"
+            "MCP 服务器令牌只存服务端，响应中仅含 hasToken 布尔值。"
         ),
     },
     "servers": [{"url": "/"}],
@@ -69,6 +70,7 @@ _OPENAPI = {
         {"name": "materials", "description": "材料上传与管理"},
         {"name": "retrieval", "description": "检索与问答"},
         {"name": "assistant", "description": "第 5 课解题助手（提示词/技能/智能体/会话）"},
+        {"name": "mcp", "description": "第 6 课 MCP 工具接入（登记/连接/审计）"},
         {"name": "system", "description": "系统"},
     ],
     "paths": {
@@ -430,7 +432,8 @@ _OPENAPI = {
                 "responses": {
                     "200": {
                         "description": (
-                            "text/event-stream：event meta（citations）→ "
+                            "text/event-stream：event meta（citations，确有工具调用时"
+                            "携带 tool_calls：[{ref,status,text,round}]）→ "
                             "多个 event delta（增量文本）→ event done（message_id）"
                         ),
                         "content": {"text/event-stream": {"schema": {"type": "string"}}},
@@ -439,6 +442,133 @@ _OPENAPI = {
                     "401": _err("未登录"),
                     "404": _err("会话/智能体不存在、跨班或（学生）已停用"),
                     "503": _err("检索或对话网关不可用"),
+                },
+            }
+        },
+        "/api/mcp/servers": {
+            "get": {
+                "tags": ["mcp"],
+                "summary": "本班 MCP 服务器列表（教师专用；响应只含 hasToken）",
+                "security": [{"bearerAuth": []}],
+                "responses": {
+                    "200": _json(_ref("McpServerListResponse")),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                },
+            },
+            "post": {
+                "tags": ["mcp"],
+                "summary": "登记 MCP 服务器（教师专用；同班同名 409）",
+                "security": [{"bearerAuth": []}],
+                "requestBody": {
+                    **_JSON_BODY,
+                    "content": {"application/json": {"schema": _ref("McpServerCreateRequest")}},
+                },
+                "responses": {
+                    "201": _json(_ref("McpServerResponse"), "登记成功"),
+                    "400": _err("name/base_url 缺失或 base_url 不合法"),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "409": _err("同班同名服务器已登记"),
+                },
+            },
+        },
+        "/api/mcp/servers/{id}": {
+            "put": {
+                "tags": ["mcp"],
+                "summary": "更新登记（教师专用；改动后连接与工具缓存失效）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("服务器 id")],
+                "requestBody": {
+                    **_JSON_BODY,
+                    "content": {"application/json": {"schema": _ref("McpServerCreateRequest")}},
+                },
+                "responses": {
+                    "200": _json(_ref("McpServerResponse")),
+                    "400": _err("字段不合法"),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "404": _err("不存在或跨班（与不存在一致）"),
+                    "409": _err("同名冲突"),
+                },
+            },
+            "delete": {
+                "tags": ["mcp"],
+                "summary": "删除登记（教师专用；工具缓存级联清除，审计记录保留）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("服务器 id")],
+                "responses": {
+                    "204": {"description": "删除成功"},
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "404": _err("不存在或跨班（与不存在一致）"),
+                },
+            },
+        },
+        "/api/mcp/servers/{id}/connect": {
+            "post": {
+                "tags": ["mcp"],
+                "summary": (
+                    "连接：initialize 握手 + tools/list 发现；成功整体替换缓存并置"
+                    "connected，失败清缓存置 disconnected 并返回可读原因"
+                ),
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("服务器 id")],
+                "responses": {
+                    "200": _json(_ref("McpConnectResponse")),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "404": _err("不存在或跨班"),
+                    "502": _err("握手或发现失败（提示检查地址与令牌）"),
+                },
+            }
+        },
+        "/api/mcp/servers/{id}/disconnect": {
+            "post": {
+                "tags": ["mcp"],
+                "summary": "断开：清空工具缓存并标记未连接（断开后引用不可保存、调用被拒）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("服务器 id")],
+                "responses": {
+                    "200": _json(_ref("McpServerResponse")),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "404": _err("不存在或跨班"),
+                },
+            }
+        },
+        "/api/mcp/servers/{id}/tools": {
+            "get": {
+                "tags": ["mcp"],
+                "summary": "最近一次成功发现的工具清单（教师专用）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("服务器 id")],
+                "responses": {
+                    "200": _json(_ref("McpToolListResponse")),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                    "404": _err("不存在或跨班"),
+                },
+            }
+        },
+        "/api/mcp/call-logs": {
+            "get": {
+                "tags": ["mcp"],
+                "summary": "本班 MCP 调用审计（教师专用，按时间倒序）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "integer", "default": 50, "maximum": 200},
+                        "description": "返回条数上限",
+                    }
+                ],
+                "responses": {
+                    "200": _json(_ref("McpCallLogListResponse")),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
                 },
             }
         },
@@ -679,6 +809,88 @@ _OPENAPI = {
                 "type": "object",
                 "properties": {"content": {"type": "string"}},
                 "required": ["content"],
+            },
+            "McpServerCreateRequest": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "服务器名（同班唯一，可含连字符）"},
+                    "base_url": {
+                        "type": "string",
+                        "description": "MCP 服务地址，如 http://mcp-demo:8090（Compose 内网）",
+                    },
+                    "token": {
+                        "type": "string",
+                        "description": "Bearer 令牌；只存服务端，任何响应都不回传（更新时留空表示不改）",
+                    },
+                },
+                "required": ["name", "base_url"],
+            },
+            "McpServer": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "classId": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "baseUrl": {"type": "string"},
+                    "hasToken": {
+                        "type": "boolean",
+                        "description": "是否已配令牌（布尔值，不含令牌原文）",
+                    },
+                    "status": {"type": "string", "enum": ["connected", "disconnected"]},
+                    "toolsCount": {"type": "integer"},
+                    "createdAt": {"type": "string", "format": "date-time"},
+                    "updatedAt": {"type": "string", "format": "date-time"},
+                },
+            },
+            "McpServerResponse": {
+                "type": "object",
+                "properties": {"server": _ref("McpServer")},
+            },
+            "McpServerListResponse": {
+                "type": "object",
+                "properties": {
+                    "servers": {"type": "array", "items": _ref("McpServer")}
+                },
+            },
+            "McpTool": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "inputSchema": {"type": "object", "description": "JSON Schema 参数结构"},
+                },
+            },
+            "McpToolListResponse": {
+                "type": "object",
+                "properties": {"tools": {"type": "array", "items": _ref("McpTool")}},
+            },
+            "McpConnectResponse": {
+                "type": "object",
+                "properties": {
+                    "server": _ref("McpServer"),
+                    "tools": {"type": "array", "items": _ref("McpTool")},
+                },
+            },
+            "McpCallLog": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "ref": {"type": "string", "example": "formula_hint@campus-tools"},
+                    "serverName": {"type": "string"},
+                    "toolName": {"type": "string"},
+                    "status": {"type": "string", "enum": ["ok", "denied", "error"]},
+                    "detail": {"type": "string", "nullable": True},
+                    "userId": {"type": "integer"},
+                    "conversationId": {"type": "integer"},
+                    "round": {"type": "integer"},
+                    "createdAt": {"type": "string", "format": "date-time"},
+                },
+            },
+            "McpCallLogListResponse": {
+                "type": "object",
+                "properties": {
+                    "calls": {"type": "array", "items": _ref("McpCallLog")}
+                },
             },
         },
     },

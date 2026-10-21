@@ -4,7 +4,7 @@ from helpers import db_query_one
 UPDATED_SOURCE = (
     "名称：apitest冒烟技能（改）\n"
     "适用条件：学生请求直接答案时\n"
-    "工具：Socratic提问\n"
+    "工具：knowledge_search\n"
     "资料：班级解析几何讲义\n"
     "启用：否\n"
     "\n"

@@ -24,6 +24,7 @@ MIGRATIONS = [
     "002_sessions_knowledge.sql",
     "003_knowledge_chunks.sql",
     "004_assistant.sql",
+    "005_mcp.sql",
 ]
 
 # Lesson 5 seeds: one class prompt + one guided skill + one enabled agent per
@@ -67,6 +68,13 @@ SEED_SKILL = {
 }
 
 SEED_AGENT_NAME = "解题助手"
+
+# Lesson 6 seed: pre-register one MCP tool server per class (disconnected).
+# The token comes from the MCP_AUTH_TOKEN env var (same value the mcp-demo
+# container runs with); seeding SKIPS registration when it is unset so test
+# environments without the tool server stay clean. Connection is a deliberate
+# teacher action (startup must not depend on mcp-demo being ready).
+SEED_MCP_SERVER = {"name": "campus-tools", "base_url": "http://mcp-demo:8090"}
 
 # Two distinguishable seeded materials (one per class) with fixed ids for idempotency
 SEED_MATERIALS = [
@@ -187,6 +195,26 @@ def _seed_assistant(conn: pymysql.connections.Connection) -> None:
     conn.commit()
 
 
+def _seed_mcp_servers(conn: pymysql.connections.Connection) -> None:
+    """Pre-register one MCP tool server per class (idempotent, disconnected)."""
+    token = (os.environ.get("MCP_AUTH_TOKEN") or "").strip()
+    if not token:
+        return
+    with conn.cursor() as cur:
+        for class_id in SEED_CLASS_PROMPTS:
+            cur.execute(
+                "SELECT id FROM mcp_servers WHERE class_id = %s AND name = %s",
+                (class_id, SEED_MCP_SERVER["name"]),
+            )
+            if cur.fetchone() is None:
+                cur.execute(
+                    "INSERT INTO mcp_servers (class_id, name, base_url, token) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (class_id, SEED_MCP_SERVER["name"], SEED_MCP_SERVER["base_url"], token),
+                )
+    conn.commit()
+
+
 def seed(conn: pymysql.connections.Connection, upload_root: Path | None = None) -> None:
     """Insert seed data (idempotent via INSERT IGNORE)."""
     if upload_root is None:
@@ -218,6 +246,7 @@ def seed(conn: pymysql.connections.Connection, upload_root: Path | None = None) 
     conn.commit()
     _seed_materials(conn, upload_root)
     _seed_assistant(conn)
+    _seed_mcp_servers(conn)
 
 
 def _db_config_from_env() -> dict:

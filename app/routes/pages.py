@@ -82,6 +82,14 @@ STYLE = """
   .msg .cites a { color: var(--pku-red); margin-right: 10px; text-decoration: none; }
   .msg .cites a:hover { text-decoration: underline; }
   .msg .skill-tag { display: inline-block; font-size: 11px; color: #8a5a2a; background: #f7ece4; border-radius: 8px; padding: 1px 8px; margin-bottom: 6px; }
+  .tool-calls { margin-bottom: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .tool-call { display: flex; align-items: center; gap: 8px; font-size: 12px; background: #f5f9f5; border: 1px solid #dbeadb; border-radius: 6px; padding: 5px 9px; flex-wrap: wrap; }
+  .tool-call.denied { background: #faf3f2; border-color: #ead4d2; }
+  .tool-call.error { background: #fdf6ec; border-color: #f0e0c8; }
+  .tool-call .tool-ref { font-weight: 700; color: #2d5a2d; }
+  .tool-call.denied .tool-ref, .tool-call.error .tool-ref { color: #8a2a2a; }
+  .tool-call .tool-status { font-size: 11px; color: #556; }
+  .tool-call .tool-text { color: #667; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .cfg-row { margin-bottom: 14px; }
   .cfg-row > label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; font-weight: 600; }
@@ -286,6 +294,34 @@ DASHBOARD_PAGE = """
       </div>
     </div>
   </div>
+
+  <div class="card" id="mcpCard" style="display:none">
+    <div class="card-header">🔌 MCP 工具服务（仅教师）</div>
+    <div class="card-body">
+      <div class="cfg-row">
+        <label>已登记的 MCP 服务器（令牌只存服务端，任何响应只含「是否已配令牌」）</label>
+        <div id="mcpServerList"></div>
+      </div>
+      <div class="cfg-row">
+        <label>登记新服务器（名称同班唯一；Base URL 为 Compose 内网地址，如 http://mcp-demo:8090）</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <input type="text" id="mcpName" placeholder="名称，如 campus-tools" style="flex:1;min-width:160px">
+          <input type="text" id="mcpBaseUrl" placeholder="Base URL，如 http://mcp-demo:8090" style="flex:2;min-width:220px">
+          <input type="password" id="mcpToken" placeholder="Bearer 令牌（提交后清空不回显）" autocomplete="new-password" style="flex:1.5;min-width:200px">
+          <button class="btn" type="button" onclick="submitMcpServer(false)">登记</button>
+        </div>
+        <div style="margin-top:6px">
+          <span class="err-msg" id="mcpErr" style="margin:0"></span>
+          <span class="success-msg" id="mcpOk"></span>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
+      <div class="cfg-row">
+        <label>最近的 MCP 工具调用记录（工具@服务器 / 状态 / 用户 / 会话 / 轮次 / 时间）</label>
+        <div id="mcpCallLogs"><div class="empty" style="padding:8px 0">加载中...</div></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -327,6 +363,10 @@ async function init() {
     // 上传区仅教师可见
     if (user.role === 'teacher') {
       document.getElementById('uploadArea').style.display = 'block';
+      document.getElementById('configCard').style.display = 'block';
+      document.getElementById('mcpCard').style.display = 'block';
+      await loadConfig();
+      await loadMcp();
     }
 
     await loadMaterials();
@@ -632,11 +672,12 @@ async function sendChatMessage() {
       input.disabled = false; sendBtn.disabled = false; sendBtn.textContent = '发送';
       return;
     }
-    // 读取 SSE 流：event meta（citations）→ delta*（增量）→ done
+    // 读取 SSE 流：event meta（citations，确有调用时含 tool_calls）→ delta*（增量）→ done
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
     let citations = [];
+    let toolCalls = [];
     let done = false;
     const handleFrame = (frame) => {
       const lines = frame.split('\\n');
@@ -648,6 +689,11 @@ async function sendChatMessage() {
       const ev = evLine ? evLine.slice(6).trim() : '';
       if (ev === 'meta') {
         citations = payload.citations || [];
+        // 第6课：工具调用事件先于正文——meta 一到就记录，流结束后渲染工具栏
+        (payload.tool_calls || []).forEach(tc => {
+          const label = tc.status === 'ok' ? '✓ 已执行' : (tc.status === 'denied' ? '✕ 被拒' : '⚠ 出错');
+          toolCalls.push({ref: tc.ref, status: tc.status, text: tc.text, label});
+        });
       } else if (ev === 'delta') {
         if (text === '') bubble.textContent = '';
         text += payload.text || '';
@@ -670,6 +716,15 @@ async function sendChatMessage() {
       interrupted = true;
       bubble.textContent = text + (text ? '\\n\\n（回答中断）' : '');
       if (!text) asst.remove();
+    }
+    if (toolCalls.length > 0 && asst.parentNode) {
+      asst.querySelector('.bubble').insertAdjacentHTML('beforebegin', '<div class="tool-calls">' +
+        toolCalls.map(t =>
+          `<div class="tool-call ${t.status}"><span class="tool-ref">🔧 ${escapeHtml(t.ref)}</span>` +
+          `<span class="tool-status">${escapeHtml(t.label)}</span>` +
+          (t.text ? `<span class="tool-text" title="${escapeHtml(t.text)}">${escapeHtml(t.text)}</span>` : '') +
+          '</div>'
+        ).join('') + '</div>');
     }
     if (citations.length > 0 && asst.parentNode) {
       asst.querySelector('.bubble').insertAdjacentHTML('afterend', '<div class="cites">' +
@@ -860,6 +915,134 @@ async function submitAgent() {
   } catch (e) { errEl.textContent = '保存失败: 网络错误'; }
 }
 
+// ============ 第6课：MCP 工具服务管理 ============
+let mcpServersCache = [];
+
+async function loadMcp() {
+  if (!document.getElementById('mcpCard')) return;
+  await renderMcpServers();
+  await loadMcpCallLogs();
+}
+
+async function renderMcpServers() {
+  const box = document.getElementById('mcpServerList');
+  try {
+    const res = await api('/api/mcp/servers');
+    const servers = (await res.json()).servers || [];
+    mcpServersCache = servers;
+    // 已连接的服务器附带拉取缓存中的工具清单
+    await Promise.all(servers.filter(s => s.status === 'connected').map(async s => {
+      try {
+        const tr = await api(`/api/mcp/servers/${s.id}/tools`);
+        s.tools = (await tr.json()).tools || [];
+      } catch (e) { s.tools = []; }
+    }));
+    if (!servers.length) {
+      box.innerHTML = '<div class="empty" style="padding:8px 0">本班尚未登记 MCP 服务器</div>';
+      return;
+    }
+    box.innerHTML = servers.map(s => {
+      const statusTag = s.status === 'connected'
+        ? '<span class="tag on">已连接 · ' + (s.toolsCount || 0) + ' 个工具</span>'
+        : '<span class="tag">未连接</span>';
+      const toolRows = (s.tools || []).map(t =>
+        `<div style="font-size:12px;color:#7a6a66;margin:3px 0 0 12px">• <b>${escapeHtml(t.name)}</b> — ${escapeHtml(t.description || '')}</div>`).join('');
+      return `
+      <div class="skill-item">
+        <div>${escapeHtml(s.name)} ${statusTag}
+          <span class="tag">${s.hasToken ? '已配令牌' : '未配令牌'}</span>
+          <span class="tag" title="${escapeHtml(s.baseUrl)}">${escapeHtml(s.baseUrl)}</span>
+        </div>
+        <div class="ops">
+          <button class="btn secondary small" type="button" onclick="connectMcp(${s.id})">${s.status === 'connected' ? '重新连接' : '连接'}</button>
+          ${s.status === 'connected' ? `<button class="btn secondary small" type="button" onclick="disconnectMcp(${s.id})">断开</button>` : ''}
+          <button class="btn secondary small" type="button" onclick="deleteMcp(${s.id})">删除</button>
+        </div>
+        <div id="mcpTools_${s.id}">${toolRows}</div>
+      </div>`;
+    }).join('');
+  } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
+async function submitMcpServer() {
+  const errEl = document.getElementById('mcpErr');
+  const okEl = document.getElementById('mcpOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  const name = document.getElementById('mcpName').value.trim();
+  const baseUrl = document.getElementById('mcpBaseUrl').value.trim();
+  const token = document.getElementById('mcpToken').value;
+  if (!name || !baseUrl) { errEl.textContent = '名称与 Base URL 必填'; return; }
+  try {
+    const res = await api('/api/mcp/servers', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name, base_url: baseUrl, token: token || undefined})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      okEl.textContent = '已登记: ' + (d.server ? d.server.name : name);
+      document.getElementById('mcpName').value = '';
+      document.getElementById('mcpBaseUrl').value = '';
+      document.getElementById('mcpToken').value = '';  // 密码框提交后清空不回显
+      await renderMcpServers();
+    } else {
+      errEl.textContent = '登记失败: ' + (d.error || res.status);
+    }
+  } catch (e) { errEl.textContent = '登记失败: 网络错误'; }
+}
+
+async function connectMcp(id) {
+  const errEl = document.getElementById('mcpErr');
+  errEl.textContent = '';
+  try {
+    const res = await api(`/api/mcp/servers/${id}/connect`, {method: 'POST'});
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      errEl.textContent = '';
+      await renderMcpServers();
+      await loadMcpCallLogs();
+    } else {
+      errEl.textContent = d.error || ('连接失败 (HTTP ' + res.status + ')');
+      await renderMcpServers();
+    }
+  } catch (e) { errEl.textContent = '连接失败: 网络错误'; }
+}
+
+async function disconnectMcp(id) {
+  try {
+    await api(`/api/mcp/servers/${id}/disconnect`, {method: 'POST'});
+    await renderMcpServers();
+  } catch (e) { /* 忽略 */ }
+}
+
+async function deleteMcp(id) {
+  if (!confirm('删除该 MCP 服务器登记？工具缓存将清空，调用记录保留。')) return;
+  try {
+    await api(`/api/mcp/servers/${id}`, {method: 'DELETE'});
+    await renderMcpServers();
+  } catch (e) { /* 忽略 */ }
+}
+
+async function loadMcpCallLogs() {
+  const box = document.getElementById('mcpCallLogs');
+  if (!box) return;
+  try {
+    const res = await api('/api/mcp/call-logs?limit=20');
+    const calls = (await res.json()).calls || [];
+    if (!calls.length) { box.innerHTML = '<div class="empty" style="padding:8px 0">暂无调用记录</div>'; return; }
+    const badge = {ok: '<span class="tag on">成功</span>', denied: '<span class="tag">被拒</span>', error: '<span class="tag">出错</span>'};
+    box.innerHTML = calls.map(c => `
+      <div class="skill-item" style="display:block">
+        <div><b>${escapeHtml(c.ref)}</b> ${badge[c.status] || escapeHtml(c.status)}
+          <span class="tag">用户${c.userId}</span>
+          <span class="tag">会话#${c.conversationId}</span>
+          <span class="tag">第${c.round}轮</span>
+          <span style="color:#aa9999;font-size:11px">${escapeHtml((c.createdAt || '').replace('T', ' '))}</span>
+        </div>
+        ${c.detail ? `<div style="font-size:12px;color:#7a6a66;margin-top:3px">${escapeHtml(String(c.detail).slice(0, 160))}</div>` : ''}
+      </div>`).join('');
+  } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
 async function init() {
   if (!getToken()) { window.location.href = '/login?next=/dashboard'; return; }
   try {
@@ -875,7 +1058,9 @@ async function init() {
     if (user.role === 'teacher') {
       document.getElementById('uploadArea').style.display = 'block';
       document.getElementById('configCard').style.display = 'block';
+      document.getElementById('mcpCard').style.display = 'block';
       await loadConfig();
+      await loadMcp();
     }
 
     await loadMaterials();

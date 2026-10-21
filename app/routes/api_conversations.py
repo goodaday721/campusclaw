@@ -152,6 +152,7 @@ def post_message(conversation_id: int):
             agent,
             conversation_id,
             content,
+            user_id=g.current_user["userId"],
         )
     except chat.AnswerUnavailable as exc:
         return jsonify({"error": "answer service unavailable", "detail": str(exc)}), 503

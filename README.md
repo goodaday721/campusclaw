@@ -1,14 +1,14 @@
 ## 价值
 
-为校园教学提供最小可用的身份认证、角色权限、班级数据隔离、知识库材料管理闭环、限定班级范围且可溯源的知识库检索问答，以及教师可配置、流式输出的「解题助手」智能体，作为后续教学功能的安全底座。
+为校园教学提供最小可用的身份认证、角色权限、班级数据隔离、知识库材料管理闭环、限定班级范围且可溯源的知识库检索问答、教师可配置且流式输出的「解题助手」智能体，以及可登记外部 MCP 工具服务器、由宿主代为执行工具调用的智能体能力，作为后续教学功能的安全底座。
 
 ## 场景
 
-教师向本班知识库投放教学材料，并配置班级提示词、「解题引导」技能与智能体（绑定技能/材料）；学生与教师可在本班材料中按关键字/语义检索具体切片、查看出处并打开原文件，可以就本班材料提问，也可以在解题助手会话中逐步获得引导式回答——回答以 SSE 流式逐字输出，先展示引用出处，无依据时明确告知而不编造。
+教师向本班知识库投放教学材料，并配置班级提示词、「解题引导」技能与智能体（绑定技能/材料/工具）；学生可在本班材料中按关键字/语义检索具体切片、查看出处并打开原文件，可以就本班材料提问，也可以在解题助手会话中逐步获得引导式回答——回答以 SSE 流式逐字输出，先展示引用出处与工具调用状态，无依据时明确告知而不编造。
 
 ## 本学期不做
 
-MCP 工具接入、作业提交与批改、异步任务队列、SSO/生产高可用、技能真实工具执行与智能匹配。
+作业提交与批改、异步任务队列、SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、技能真实工具执行与智能匹配。
 
 ## 快速开始（Docker Compose，唯一交付形态）
 
@@ -21,10 +21,10 @@ cp .env.example .env
 #    （JWT_SECRET 可用 python -c "import secrets; print(secrets.token_hex(32))" 生成）
 #    使用向量检索/问答还需填写 EMBED_API_KEY/EMBED_MODEL 与 CHAT_API_KEY/CHAT_MODEL
 
-# 2. 一键构建并启动（web / api / db / qdrant 四服务）
+# 2. 一键构建并启动（web / api / db / qdrant / mcp-demo 五服务）
 docker compose up --build -d
 
-# 3. 查看服务状态（四个服务均应为 running）
+# 3. 查看服务状态（五个服务均应为 running）
 docker compose ps
 
 # 4. 验证
@@ -110,6 +110,20 @@ curl -X POST http://localhost:8080/auth/logout -H "Authorization: Bearer <token>
 - 无命中时返回固定文案「资料中未找到相关内容」且不调用模型；会话归属班级+用户双校验，跨班一律 404。
 - 历史多轮：服务端自动携带最近 6 轮对话；流式中断时不落库，前端提示「（回答中断）」。
 
+## MCP 工具服务（第 6 课）
+
+教师可在「🔌 MCP 工具服务」卡登记外部 MCP 服务器（JSON-RPC 2.0 单端点，Streamable HTTP 传输，Bearer 令牌鉴权），连接后服务端缓存其工具清单（`initialize` / `tools/list`），学生提问命中带工具引用的技能时由宿主（api）代为执行工具调用（`tools/call`）：
+
+- 同仓库 `mcp-server/` 内置演示服务器（campus-tools：`formula_hint` 公式/步骤提示、`unit_convert` 单位换算），首次启动自动预登记到各班（不自动连接），令牌取 `.env` 的 `MCP_AUTH_TOKEN`，未配置则跳过预登记。
+- 技能 source 的「工具：」行支持 `工具名@服务器名` 引用（如 `unit_convert@campus-tools`），保存时四查校验（格式/已登记/已连接/在最近发现清单内），不合法即 400 可读错误。
+- 工具调用循环：模型提出调用（OpenAI tools 协议）→ api 校验参数并携带该服务器令牌执行 → 结果经指令式句式安全检查后作为数据拼回上下文 → 最多 3 轮、累计 5 次，超限优雅降级为普通回答。
+- SSE `meta` 事件先于正文携带 `tool_calls`（工具@服务器、状态、轮次），前端在回答正文前渲染工具调用状态栏（✓ 已执行 / ✕ 被拒 / ⚠ 出错）；每次调用落审计表 `mcp_call_logs`，教师端「最近调用记录」可查。
+- 安全边界：令牌只存服务端，任何响应只含 `hasToken` 布尔值；学生一律 403；跨班服务器一律 404；服务器删除后历史审计保留 `server_name`。
+
+配置：`.env` 中 `MCP_AUTH_TOKEN` 为 mcp-demo 服务鉴权令牌（可用 `python -c "import secrets; print(secrets.token_hex(16))"` 生成）；`MCP_MAX_ROUNDS`（默认 3）、`MCP_MAX_CALLS`（默认 5）与超时项可调。
+
+验证路径：教师连接 campus-tools（看到 2 个工具）→ 新建技能（`工具：unit_convert@campus-tools`，不填资料行）并绑定到智能体 → 学生向该智能体提问「3千克等于多少克？」→ 回答正文前出现「✓ 已执行」工具栏 → 教师端调用记录出现 ok 审计行 → 断开服务器后该技能再保存即被拒（未连接）。
+
 ### 接口文档（Swagger）
 
 - OpenAPI 描述：`GET /openapi.json`（OpenAPI 3.0.3，覆盖全部接口与错误码）。
@@ -123,7 +137,7 @@ curl -X POST http://localhost:8080/auth/logout -H "Authorization: Bearer <token>
 docker compose exec api python apitest/run_all.py
 ```
 
-覆盖：登录/身份、材料列表、关键字检索、班级提示词读写、技能增改删、智能体列表、新建会话与 SSE 流式提问（含落库核对）。
+覆盖：登录/身份、材料列表、关键字检索、班级提示词读写、技能增改删、智能体列表、新建会话与 SSE 流式提问（含落库核对）、MCP 服务器登记/连接/工具清单/断开与学生提问命中工具的全链路（含审计核对）。
 
 ## 数据持久化与重置
 
@@ -154,4 +168,4 @@ docker compose exec api python apitest/run_all.py
 
 ## 技术栈
 
-Flask + MySQL 8.0（PyMySQL，ngram 全文索引）+ Qdrant 向量库 + OpenAI 兼容模型网关（仅服务端）+ Nginx 反向代理；Docker Compose 四服务编排（web / api / db / qdrant），仅 web 映射宿主机端口。
+Flask + MySQL 8.0（PyMySQL，ngram 全文索引）+ Qdrant 向量库 + OpenAI 兼容模型网关（仅服务端）+ Nginx 反向代理；Docker Compose 五服务编排（web / api / db / qdrant / mcp-demo），仅 web 映射宿主机端口。

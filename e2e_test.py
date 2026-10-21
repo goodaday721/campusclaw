@@ -261,7 +261,7 @@ def run_with_test_client():
     check("student prompt PUT 403", r.status_code == 403, f"status={r.status_code}")
 
     skill_source = (
-        "名称：e2e引导技能\n适用条件：e2e\n工具：Socratic提问\n"
+        "名称：e2e引导技能\n适用条件：e2e\n工具：knowledge_search\n"
         "资料：班级材料\n启用：是\n\n引导正文，不给最终答案。"
     )
     r = ta.post("/api/skills", json={"source": skill_source})
@@ -335,6 +335,142 @@ def run_with_test_client():
 
     check("cross-class message 404",
           sb.post(f"/api/conversations/{cid}/messages", json={"content": "hi"}).status_code == 404)
+
+    # 10.6 Lesson-6 MCP: registry -> connect -> tool skill -> tool loop -> audit
+    print("  --- Lesson 6: MCP tool integration ---")
+    from app.services import mcp_client
+
+    def _fake_mcp_init(base_url, token, config):
+        return {"protocolVersion": "2024-11-05", "serverInfo": {"name": "campus-tools"}}
+
+    def _fake_mcp_list(base_url, token, config):
+        return [
+            {"name": "unit_convert", "description": "单位换算工具。",
+             "inputSchema": {"type": "object",
+                             "properties": {"value": {"type": "number"},
+                                            "from_unit": {"type": "string"},
+                                            "to_unit": {"type": "string"}},
+                             "required": ["value", "from_unit", "to_unit"]}},
+            {"name": "formula_hint", "description": "公式提示工具。",
+             "inputSchema": {"type": "object",
+                             "properties": {"query": {"type": "string"}},
+                             "required": ["query"]}},
+        ]
+
+    mcp_calls = []
+
+    def _fake_mcp_call(base_url, token, tool_name, arguments, config):
+        mcp_calls.append({"tool": tool_name, "arguments": arguments})
+        return f"{arguments.get('value')} {arguments.get('from_unit')} = 3000 {arguments.get('to_unit')}（进率 1000）。"
+
+    mcp_client.initialize = _fake_mcp_init
+    mcp_client.list_tools = _fake_mcp_list
+    mcp_client.call_tool = _fake_mcp_call
+
+    tool_loop_calls = []
+
+    def _fake_chat_with_tools(cfg, messages, tools):
+        tool_loop_calls.append({"tools": tools, "last": messages[-1]["content"]})
+        if len(tool_loop_calls) == 1:
+            return {"content": None,
+                    "tool_calls": [{"id": "c1", "name": "unit_convert",
+                                    "arguments": {"value": 3, "from_unit": "千克", "to_unit": "克"}}]}
+        return {"content": "回答完成。", "tool_calls": None}
+
+    model_gateway.chat_with_tools = _fake_chat_with_tools
+
+    r = sa.get("/api/mcp/servers")
+    check("student mcp list 403", r.status_code == 403, f"status={r.status_code}")
+    r = ta.get("/api/mcp/servers")
+    check("teacher mcp list 200 (seed pre-registered)",
+          r.status_code == 200 and r.get_json()["servers"]
+          and r.get_json()["servers"][0]["name"] == "campus-tools", f"status={r.status_code}")
+    server = r.get_json()["servers"][0]
+    check("server response has hasToken only",
+          server["hasToken"] is True and "token" not in json.dumps(r.get_json()))
+
+    r = ta.post(f"/api/mcp/servers/{server['id']}/connect")
+    check("mcp connect 200 + 2 tools", r.status_code == 200
+          and len(r.get_json()["tools"]) == 2, f"status={r.status_code}")
+    r = ta.get(f"/api/mcp/servers/{server['id']}/tools")
+    check("cached tools listed", r.status_code == 200
+          and {t["name"] for t in r.get_json()["tools"]} == {"unit_convert", "formula_hint"})
+
+    def tool_skill_source():
+        return ("名称：e2e工具技能\n适用条件：单位换算\n"
+                "工具：knowledge_search, unit_convert@campus-tools\n"
+                "资料：班级材料\n启用：是\n\n先换算再引导，不给最终答案。")
+
+    r = ta.post("/api/skills", json={"source": tool_skill_source()})
+    check("tool skill create 201 (server connected)", r.status_code == 201,
+          f"status={r.status_code} body={r.get_json()}")
+    tool_skill_id = r.get_json()["skill"]["id"]
+    r = ta.post(f"/api/mcp/servers/{server['id']}/disconnect")
+    check("mcp disconnect 200", r.status_code == 200, f"status={r.status_code}")
+    check("cache cleared on disconnect",
+          ta.get(f"/api/mcp/servers/{server['id']}/tools").get_json()["tools"] == [])
+    r = ta.post("/api/skills", json={"source": tool_skill_source()})
+    check("tool skill create 400 (disconnected)", r.status_code == 400,
+          f"status={r.status_code}")
+    for bad in ("Formula_Hint@campus-tools", "formula-hint@campus-tools",
+                "unit_convert@no-such"):
+        r = ta.post("/api/skills", json={
+            "source": tool_skill_source().replace("unit_convert@campus-tools", bad)})
+        check(f"bad reference rejected: {bad}", r.status_code == 400, f"status={r.status_code}")
+
+    r = ta.post(f"/api/mcp/servers/{server['id']}/connect")
+    check("mcp reconnect 200", r.status_code == 200, f"status={r.status_code}")
+    r = ta.post(
+        "/api/agents",
+        json={"name": "e2e工具智能体", "prompt": "", "skill_ids": [tool_skill_id],
+              "material_ids": [], "enabled": True},
+    )
+    check("tool agent create 201", r.status_code == 201, f"status={r.status_code}")
+    tool_agent_id = r.get_json()["agent"]["id"]
+    r = sa.post("/api/conversations", json={"agent_id": tool_agent_id})
+    tool_cid = r.get_json()["conversation"]["id"]
+
+    r = sa.post(f"/api/conversations/{tool_cid}/messages",
+                json={"content": "3千克等于多少克？需要单位换算。lesson content"})
+    frames = parse_sse_text(r.get_data(as_text=True))
+    kinds = [name for name, _ in frames]
+    check("tool SSE frame order meta->delta*->done",
+          kinds[0] == "meta" and kinds[-1] == "done", str(kinds))
+    tmeta = frames[0][1]
+    check("meta.tool_calls ok with ref/round",
+          tmeta.get("tool_calls") and tmeta["tool_calls"][0]["ref"] == "unit_convert@campus-tools"
+          and tmeta["tool_calls"][0]["status"] == "ok"
+          and tmeta["tool_calls"][0]["round"] == 1, str(tmeta.get("tool_calls")))
+    check("tool executed once with model-filled args",
+          len(mcp_calls) == 1 and mcp_calls[0]["arguments"]["value"] == 3,
+          str(mcp_calls))
+    check("tool result entered user message as data",
+          "[工具 unit_convert@campus-tools 第1轮返回的数据]" in tool_loop_calls[1]["last"])
+    log_row = query_one(
+        db, "SELECT * FROM mcp_call_logs WHERE conversation_id=%s", (tool_cid,))
+    check("audit row ok with user/conversation/round",
+          log_row and log_row["status"] == "ok" and log_row["round_no"] == 1
+          and log_row["user_id"] and log_row["conversation_id"])
+    r = ta.get("/api/mcp/call-logs")
+    check("teacher audit endpoint shows the call",
+          r.status_code == 200
+          and any(c["ref"] == "unit_convert@campus-tools" and c["status"] == "ok"
+                  for c in r.get_json()["calls"]))
+
+    # Disconnect then ask again: the call is denied, chat continues.
+    r = ta.post(f"/api/mcp/servers/{server['id']}/disconnect")
+    check("disconnect for denial", r.status_code == 200)
+    r = sa.post(f"/api/conversations/{tool_cid}/messages",
+                json={"content": "5千克等于多少克？需要单位换算。lesson content"})
+    frames = parse_sse_text(r.get_data(as_text=True))
+    check("denied call not silently ok",
+          frames[0][1].get("tool_calls")
+          and frames[0][1]["tool_calls"][0]["status"] == "denied"
+          and frames[-1][0] == "done")
+    denied_row = query_one(
+        db, "SELECT status FROM mcp_call_logs WHERE conversation_id=%s "
+            "ORDER BY id DESC LIMIT 1", (tool_cid,))
+    check("denied audit row recorded", denied_row and denied_row["status"] == "denied")
 
     # 11. Repeated startup no duplicate seed
     counts_before = {
@@ -489,7 +625,7 @@ def run_http(base_url="http://localhost:8080"):
     check("student prompt PUT 403", s == 403, f"status={s}")
 
     skill_source = (
-        "名称：e2e引导技能\n适用条件：e2e\n工具：Socratic提问\n"
+        "名称：e2e引导技能\n适用条件：e2e\n工具：knowledge_search\n"
         "资料：班级材料\n启用：是\n\n引导正文，不给最终答案。"
     )
     s, d = req(ta, "POST", "/api/skills", {"source": skill_source})

@@ -95,6 +95,70 @@ def chat(config, messages: list[dict]) -> str:
         raise GatewayUnavailable("chat gateway returned an unreadable response") from exc
 
 
+def chat_with_tools(config, messages: list[dict], tools: list[dict]) -> dict:
+    """One non-streaming completion WITH tool declarations (lesson 6 loop).
+
+    Returns {"content": str | None, "tool_calls": [{"id", "name", "arguments"
+    (dict)}] | None}. Arguments that fail to parse as JSON are skipped with
+    the tool_call dropped (the host treats a malformed proposal as no call —
+    the model simply gets no data for it and answers from what it has).
+    Raises GatewayUnavailable / GatewayRejected like chat().
+    """
+    if not config.chat_configured():
+        raise GatewayUnavailable("chat gateway is not configured")
+
+    url = config.chat_base_url.rstrip("/") + "/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {config.chat_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": config.chat_model,
+        "messages": messages,
+        "stream": False,
+        "tools": tools,
+    }
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=_timeout(config))
+    except requests.RequestException as exc:
+        raise GatewayUnavailable(f"chat gateway unreachable: {type(exc).__name__}")
+
+    if 500 <= resp.status_code < 600:
+        raise GatewayUnavailable(f"chat gateway returned {resp.status_code}")
+    if not (200 <= resp.status_code < 300):
+        raise GatewayRejected(f"chat gateway rejected request ({resp.status_code})")
+
+    try:
+        data = resp.json()
+        message = data["choices"][0]["message"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        raise GatewayUnavailable("chat gateway returned an unreadable response") from exc
+
+    calls = []
+    for call in message.get("tool_calls") or []:
+        fn = call.get("function") or {}
+        name = fn.get("name")
+        raw_args = fn.get("arguments") or "{}"
+        if not isinstance(name, str) or not name:
+            continue
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except ValueError:
+            continue
+        if not isinstance(args, dict):
+            continue
+        calls.append({
+            "id": call.get("id") or f"call_{len(calls)}",
+            "name": name,
+            "arguments": args,
+        })
+    content = message.get("content")
+    return {
+        "content": content if isinstance(content, str) and content.strip() else None,
+        "tool_calls": calls or None,
+    }
+
+
 def chat_stream(config, messages: list[dict]):
     """Yield text deltas from a streaming chat completion (OpenAI compatible).
 
