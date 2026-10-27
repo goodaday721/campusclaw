@@ -1,4 +1,4 @@
-﻿"""GET /openapi.json + GET /swagger/index.html — API documentation (lesson 5).
+"""GET /openapi.json + GET /swagger/index.html — API documentation (lesson 5).
 
 The OpenAPI document is a hand-written dict covering every public endpoint
 (legacy lesson-1..4 routes plus the lesson-5 /api/ assistant routes) with
