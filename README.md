@@ -8,7 +8,7 @@
 
 ## 本学期不做
 
-作业提交与批改、异步任务队列、SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、技能真实工具执行与智能匹配。
+作业提交与批改、异步任务队列、SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、技能的智能匹配（工具由技能显式引用、宿主按需代执行）。
 
 ## 快速开始（Docker Compose，唯一交付形态）
 
@@ -28,7 +28,8 @@ docker compose up --build -d
 docker compose ps
 
 # 4. 验证
-#    健康检查：http://localhost:8080/health → {"status":"ok"}
+#    存活检查：http://localhost:8080/health        → {"status":"ok"}
+#    就绪检查：http://localhost:8080/health/ready  → 200（db/qdrant 均可达）或 503（有依赖不可用）
 #    登录页：  http://localhost:8080/login
 ```
 
@@ -138,6 +139,27 @@ docker compose exec api python apitest/run_all.py
 ```
 
 覆盖：登录/身份、材料列表、关键字检索、班级提示词读写、技能增改删、智能体列表、新建会话与 SSE 流式提问（含落库核对）、MCP 服务器登记/连接/工具清单/断开与学生提问命中工具的全链路（含审计核对）。
+
+## 工程规范与小组项目（第 7 课）
+
+本仓库按「建仓库 → 定规约 → 立规范 → 落骨架」四步工程化，后续每课只在其上做增量交付。
+
+- **常驻约束入口**：[AGENTS.md](AGENTS.md)。任何协作者或编码代理先读它；每条规则都带一行「检查：」说明如何验证。
+- **规范明细**：`docs/standards/` 下 8 份——产品设计、后端开发、安全开发、测试、部署运维（必修五类），以及 AI 应用、数据、评审与完成定义（补充三类）。
+- **规约**：`openspec/specs/` 为 11 个能力主 spec（133 条 Scenario）；能力与场景的对应关系见 `docs/lesson-07/ability-scenarios.md`。
+- **变更流程**：每次改动开一条变更，名称为 `YYYY-MM-DD-短横小写英文名`，四份文件齐全并通过 `openspec validate <变更名> --strict`，验收后归档到 `openspec/changes/archive/`。
+- **提交信息**：写清「改了什么、依据哪条规约」。
+- **骨架基线**：`/health`（存活）+ `/health/ready`（依赖连通）+ 单行 JSON 访问日志（`ts/level/request_id/method/path/status/ms/class_id/user_id`，响应头回显 `X-Request-Id`），标签 `v0.0.1-skeleton`。
+- **小组**：1 人独立完成，兼任全部三角色；角色说明与个人贡献记录见 `docs/lesson-07/roles-and-contribution.md`。
+- **验证记录**：`docs/lesson-07/verification.md`（含从零启动、三条门禁命令的真实输出）。
+
+提交前门禁：
+
+```bash
+docker compose exec -T api python -m pytest -q
+docker compose exec -T api python e2e_test.py
+docker compose exec -T api python apitest/run_all.py
+```
 
 ## 数据持久化与重置
 

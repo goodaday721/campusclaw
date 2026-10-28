@@ -22,3 +22,23 @@
 
 - **WHEN** 浏览器打开 `/swagger/index.html`，通过 Authorize 填入登录返回的 token 后试调 `GET /api/prompt`
 - **THEN** 页面正常渲染文档，试调请求携带 `Authorization: Bearer <token>` 并返回 200 与真实数据
+
+#### Scenario: 未授权试调返回 401
+
+- **WHEN** 不填 Authorize 直接试调 `GET /api/skills`
+- **THEN** 返回 401，与文档标注的错误码一致
+
+#### Scenario: 学生越权试调返回 403
+
+- **WHEN** 以学生 token 试调 `POST /api/skills`
+- **THEN** 返回 403，与文档标注的错误码一致
+
+#### Scenario: 非法入参返回 400
+
+- **WHEN** 试调 `POST /api/skills` 且 body 缺少 `source` 字段
+- **THEN** 返回 400 与可读错误，不产生技能记录
+
+#### Scenario: 不存在的资源返回 404
+
+- **WHEN** 试调 `GET /api/conversations/999999`
+- **THEN** 返回 404，与文档标注一致

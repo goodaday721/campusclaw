@@ -1,4 +1,10 @@
-## ADDED Requirements
+# mcp-server Specification
+
+## Purpose
+
+提供一个与主应用同仓、随 Compose 一起启动的内网演示用 MCP 工具服务器（`mcp-demo`）：单端点 `POST /mcp` 实现 JSON-RPC 2.0 的 initialize / tools/list / tools/call，Bearer 令牌只从环境变量读取，供课程演示外部工具接入而不暴露到宿主机。
+
+## Requirements
 
 ### Requirement: 自建 MCP 工具服务器
 
@@ -23,6 +29,21 @@
 
 - **WHEN** 发送非法 JSON 或未知 method
 - **THEN** 返回带 code（-32700/-32601）与可读 message 的 JSON-RPC error 响应
+
+#### Scenario: 缺失 method 的请求被拒
+
+- **WHEN** 发送合法 JSON 但缺少 `method` 字段的请求
+- **THEN** 返回 JSON-RPC 错误 -32600 与可读 message，不执行任何工具
+
+#### Scenario: 工具参数非法返回 isError
+
+- **WHEN** 携带正确令牌调用 `tools/call`，但 `arguments` 缺少必填字段或不含该工具名
+- **THEN** 返回 `result.isError` 为 true 的可读错误文本（未知工具亦同），HTTP 状态仍为 200
+
+#### Scenario: 非 POST 方法访问被拒
+
+- **WHEN** 以 GET 请求 `/mcp`
+- **THEN** 返回 405（仅 POST 接受 JSON-RPC），不执行任何工具
 
 #### Scenario: Compose 内网互通
 

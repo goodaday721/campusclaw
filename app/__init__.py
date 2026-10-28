@@ -33,6 +33,9 @@ def create_app(config: Config | None = None) -> Flask:
         config = Config()
 
     app = Flask(__name__)
+    from app.middleware.request_logging import init_request_logging
+
+    init_request_logging(app)
     app.config["DB"] = config.db_config()
     app.config["QDRANT"] = config.qdrant_config()
     app.config["APP_CONFIG"] = config
