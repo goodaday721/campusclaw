@@ -10,6 +10,8 @@
   检查：`tests/test_retrieval.py::TestKeywordSearch::test_keyword_works_when_qdrant_down`、`tests/test_retrieval.py::TestHybridAndRRF::test_qdrant_unavailable_hybrid_503`。
 - 原始网关响应与异常原文不返回浏览器，只给短语；`detail` 仅 503 使用且取服务自身的短语。
   检查：`grep -rn "\"detail\"" app/routes` 除 schema 与审计字段外只在 `search.py`、`ask.py`、`api_conversations.py` 的 503 分支。
+- 异步批改的 prompt 只含本题题目、参考答案与学生答案，不拼接材料切片、技能或 MCP 工具；批改调用与问答共用 `model_gateway.chat`，不新增直连。
+  检查：`grep -n "knowledge\|skill\|mcp" app/services/grading.py` 无匹配；`tests/test_grading.py::TestWorker`。
 
 ## 工具只走既有服务层
 

@@ -25,6 +25,7 @@ MIGRATIONS = [
     "003_knowledge_chunks.sql",
     "004_assistant.sql",
     "005_mcp.sql",
+    "006_grading.sql",
 ]
 
 # Lesson 5 seeds: one class prompt + one guided skill + one enabled agent per

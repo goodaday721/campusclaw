@@ -69,6 +69,12 @@ class Config:
         # Excerpt length shown in search results (characters).
         self.excerpt_limit = int(source.get("EXCERPT_LIMIT", "200"))
 
+        # Lesson-8 async grading worker (optional knobs, sane defaults).
+        self.worker_poll_interval = float(source.get("WORKER_POLL_INTERVAL", "2"))
+        self.worker_stale_lock_seconds = int(
+            source.get("WORKER_STALE_LOCK_SECONDS", "60")
+        )
+
     def db_config(self) -> dict:
         """Connection kwargs for app.db.connection.get_connection."""
         return {

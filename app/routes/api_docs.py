@@ -56,12 +56,13 @@ _OPENAPI = {
     "openapi": "3.0.3",
     "info": {
         "title": "CampusClaw API",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "description": (
             "班级课程资料问答与解题助手。第 1-4 课的登录/材料/检索/问答端点、"
-            "第 5 课的提示词/技能/智能体/流式会话端点与第 6 课的 MCP 工具接入"
-            "端点（/api/ 前缀）。除公开端点外均需 Authorization: Bearer <JWT>；"
-            "MCP 服务器令牌只存服务端，响应中仅含 hasToken 布尔值。"
+            "第 5 课的提示词/技能/智能体/流式会话端点、第 6 课的 MCP 工具接入"
+            "端点与第 8 课的作业/异步批改端点（/api/ 前缀）。除公开端点外均需"
+            "Authorization: Bearer <JWT>；MCP 服务器令牌只存服务端，响应中仅含"
+            "hasToken 布尔值；提交作业返回 202 与 taskId，结果由 worker 异步写入。"
         ),
     },
     "servers": [{"url": "/"}],
@@ -71,6 +72,7 @@ _OPENAPI = {
         {"name": "retrieval", "description": "检索与问答"},
         {"name": "assistant", "description": "第 5 课解题助手（提示词/技能/智能体/会话）"},
         {"name": "mcp", "description": "第 6 课 MCP 工具接入（登记/连接/审计）"},
+        {"name": "grading", "description": "第 8 课作业与异步批改（提交/轮询）"},
         {"name": "system", "description": "系统"},
     ],
     "paths": {
@@ -572,6 +574,70 @@ _OPENAPI = {
                 },
             }
         },
+        "/api/assignments": {
+            "get": {
+                "tags": ["grading"],
+                "summary": "本班作业列表（教师与学生均可）",
+                "security": [{"bearerAuth": []}],
+                "responses": {
+                    "200": _json(_ref("AssignmentListResponse")),
+                    "401": _err("未登录"),
+                },
+            },
+            "post": {
+                "tags": ["grading"],
+                "summary": "创建作业（教师专用；标题、题目、参考答案必填）",
+                "security": [{"bearerAuth": []}],
+                "requestBody": {
+                    **_JSON_BODY,
+                    "content": {"application/json": {"schema": _ref("AssignmentCreateRequest")}},
+                },
+                "responses": {
+                    "201": _json(_ref("AssignmentResponse"), "创建成功"),
+                    "400": _err("标题/题目/参考答案缺失"),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                },
+            },
+        },
+        "/api/assignments/{id}/submissions": {
+            "post": {
+                "tags": ["grading"],
+                "summary": (
+                    "提交作业（学生本人）：返回 202 与 taskId；重复提交复用同一"
+                    "提交与任务（幂等）"
+                ),
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("作业 id")],
+                "requestBody": {
+                    **_JSON_BODY,
+                    "content": {"application/json": {"schema": _ref("SubmissionCreateRequest")}},
+                },
+                "responses": {
+                    "202": _json(_ref("SubmissionAcceptedResponse"), "已入队，异步批改"),
+                    "400": _err("answer 缺失"),
+                    "401": _err("未登录"),
+                    "403": _err("非学生角色"),
+                    "404": _err("作业不存在或跨班（与不存在一致）"),
+                },
+            }
+        },
+        "/api/submissions/{id}": {
+            "get": {
+                "tags": ["grading"],
+                "summary": (
+                    "轮询提交结果：学生只能看自己的提交，教师可看本班提交；"
+                    "status 由 pending → running → succeeded/failed"
+                ),
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("提交 id")],
+                "responses": {
+                    "200": _json(_ref("Submission")),
+                    "401": _err("未登录"),
+                    "404": _err("不存在、跨班或非本人提交"),
+                },
+            }
+        },
     },
     "components": {
         "securitySchemes": {
@@ -890,6 +956,73 @@ _OPENAPI = {
                 "type": "object",
                 "properties": {
                     "calls": {"type": "array", "items": _ref("McpCallLog")}
+                },
+            },
+            "AssignmentCreateRequest": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "作业标题"},
+                    "question": {"type": "string", "description": "题目"},
+                    "reference_answer": {"type": "string", "description": "参考答案（批改依据）"},
+                },
+                "required": ["title", "question", "reference_answer"],
+            },
+            "Assignment": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "classId": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "question": {"type": "string"},
+                    "referenceAnswer": {"type": "string"},
+                    "createdBy": {"type": "integer"},
+                    "createdAt": {"type": "string", "format": "date-time"},
+                },
+            },
+            "AssignmentResponse": {
+                "type": "object",
+                "properties": {"assignment": _ref("Assignment")},
+            },
+            "AssignmentListResponse": {
+                "type": "object",
+                "properties": {
+                    "assignments": {"type": "array", "items": _ref("Assignment")}
+                },
+            },
+            "SubmissionCreateRequest": {
+                "type": "object",
+                "properties": {"answer": {"type": "string", "description": "学生答案文本"}},
+                "required": ["answer"],
+            },
+            "SubmissionAcceptedResponse": {
+                "type": "object",
+                "properties": {
+                    "taskId": {"type": "integer", "description": "异步批改任务 id（重复提交返回同一个）"},
+                    "submissionId": {"type": "integer"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "running", "succeeded", "failed"],
+                    },
+                },
+                "required": ["taskId", "submissionId", "status"],
+            },
+            "Submission": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "assignmentId": {"type": "integer"},
+                    "classId": {"type": "integer"},
+                    "studentId": {"type": "integer"},
+                    "answer": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "running", "succeeded", "failed"],
+                    },
+                    "score": {"type": "integer", "nullable": True},
+                    "feedback": {"type": "string", "nullable": True},
+                    "gradedAt": {"type": "string", "format": "date-time", "nullable": True},
+                    "createdAt": {"type": "string", "format": "date-time"},
+                    "taskId": {"type": "integer"},
                 },
             },
         },

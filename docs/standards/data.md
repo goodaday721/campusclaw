@@ -8,8 +8,8 @@
   检查：`grep -rn "KEY idx_\|UNIQUE KEY uq_\|CONSTRAINT fk_" migrations/` 每行前缀正确，新增项按上例命名。
 - 新建表必须有 `created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`；既有例外（`classes`、`users`、`sessions`、`knowledge_entries`、`class_prompts`、`agent_skills`、`agent_materials`、`mcp_tools_cache`）只能靠新迁移补列，不得改老迁移文件。
   检查：`grep -h "CREATE TABLE" migrations/*.sql` 列出全部表名；新增表名同时能在 `grep -n "created_at" migrations/<新文件>` 命中。
-- 可编辑实体必须有 `updated_at ... ON UPDATE CURRENT_TIMESTAMP`：`skills`、`agents`、`conversations`、`mcp_servers`、`class_prompts`；只追加的流水与关联表不设 `updated_at`。
-  检查：`grep -n "updated_at" migrations/004_assistant.sql migrations/005_mcp.sql` 覆盖上述五表，`mcp_call_logs`、`messages` 不出现。
+- 可编辑实体必须有 `updated_at ... ON UPDATE CURRENT_TIMESTAMP`：`skills`、`agents`、`conversations`、`mcp_servers`、`class_prompts`、`submissions`、`jobs`；只追加的流水与关联表不设 `updated_at`。
+  检查：`grep -n "updated_at" migrations/004_assistant.sql migrations/005_mcp.sql migrations/006_grading.sql` 覆盖上述表，`mcp_call_logs`、`messages`、`assignments` 不出现。
 - `mcp_call_logs` 必须能回答五问：谁（`user_id`）、哪个班（`class_id`）、调了什么（`tool_name` + `server_name`）、结果如何（`status` ok/denied/error + `detail`）、哪次会话第几轮（`conversation_id` + `round_no`），再加 `created_at`。
   检查：`tests/test_mcp.py::TestToolLoop::test_hit_with_tool_call` 与 `test_denied_when_disconnected_between_prepare_and_call` 的审计行断言。
 - 外键必须声明删除行为：业务数据随班级级联（`ON DELETE CASCADE`），`mcp_call_logs.server_id` 用 `ON DELETE SET NULL` 保留审计；既有未声明的五个（`users.class_id`、`materials.class_id`、`materials.uploader_user_id`、`knowledge_entries.class_id`、`knowledge_chunks.class_id`）保留不改，真要删班需先补迁移。
@@ -20,7 +20,7 @@
 - 迁移只增：只新增 `00N_*.sql`，不改既有文件、不用 `DROP`/`ALTER`（MySQL 8.0 无 `CREATE INDEX IF NOT EXISTS`，索引用内联声明保证幂等）。
   检查：`grep -rn "DROP \|ALTER TABLE" migrations/` 无匹配；`git diff --stat migrations/` 只显示新增文件。
 - 新迁移在 `app/__init__.py`、`tests/conftest.py`、`seeds/seed.py` 三处 `MIGRATIONS` 同步登记，顺序与文件名一致。
-  检查：`grep -c "005_mcp.sql" app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 1。
+  检查：`grep -c "006_grading.sql" app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 1。
 - 迁移与种子必须可重复执行：重复启动不产生重复行。
   检查：`tests/test_health.py::TestSeedIdempotent::test_repeated_startup_no_duplicate_seed`。
 
@@ -30,10 +30,10 @@
   检查：`tests/test_mcp.py::TestRegistryAPI::test_seed_registered_has_token_only`、`tests/test_auth.py::TestNoPlaintextLogs`。
 - L2 个人标识：`users.username`、`materials.uploader_user_id`。当前项目无手机号/邮箱字段，新增任何联系方式字段前必须先在本文件登记分级与展示规则。
   检查：`grep -n "username\|uploader_user_id" migrations/001_initial_schema.sql`；`grep -rni "phone\|email\|mobile" migrations/` 无匹配。
-- L3 教学数据：材料正文（`knowledge_entries.content`、`knowledge_chunks.chunk_text`）、会话与消息、工具调用记录。仅本班可见，跨班一律 404。
-  检查：`tests/test_isolation.py::TestCrossClassRejection`、`tests/test_assistant.py::TestConversationsAPI::test_cross_class_message_404`。
-- 不存成绩：本项目不做作业提交与批改，任何"分数/评语/排名"字段一律不引入。
-  检查：`grep -rni "score\|grade\|rank" migrations/` 无匹配。
+- L3 教学数据：材料正文（`knowledge_entries.content`、`knowledge_chunks.chunk_text`）、会话与消息、工具调用记录、作业题目与参考答案（`assignments.question/reference_answer`）、学生答案与批改结果（`submissions.answer/score/feedback`）。仅本班可见，跨班一律 404。
+  检查：`tests/test_isolation.py::TestCrossClassRejection`、`tests/test_assistant.py::TestConversationsAPI::test_cross_class_message_404`、`tests/test_grading.py::TestPollingAPI::test_other_student_404`。
+- 分数与评语属 L3：`submissions.score` 可空（模型输出非结构化时为空），`feedback` 只对本班本人与教师可见；`jobs.payload` 只存 `submission_id`，不冗余答案正文。
+  检查：`grep -n "payload" app/routes/api_grading.py` 只出现 `submission_id`；`tests/test_grading.py::TestPollingAPI`。
 
 ## 向量库与副本
 

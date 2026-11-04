@@ -23,6 +23,8 @@
   检查：`grep -c "/v1" app/routes` 为 0；`openspec list --specs` 含对应能力，变更存在时 `openspec validate <变更名> --strict` 通过。
 - 列表类查询的条数与分页用 query 参数并夹紧范围（`/api/mcp/call-logs` 的 `limit` 夹在 1–200）。
   检查：`tests/test_mcp.py::TestToolLoop` 与 `app/routes/api_mcp.py::list_call_logs` 的 `max(1, min(limit or 50, 200))` 一致。
+- 异步任务接口：提交返回 `202` + `{"taskId","submissionId","status"}`；轮询用 `GET /api/submissions/<int:submission_id>` 读状态与结果；重复提交必须复用同一提交与任务，不得新增行。
+  检查：`tests/test_grading.py::TestSubmissionsAPI::test_resubmit_is_idempotent`、`apitest/cases/api/grading/` 的提交用例。
 
 ## 统一响应与错误码
 
@@ -30,14 +32,14 @@
   检查：`tests/test_mcp.py::TestRegistryAPI::test_create_and_update_and_delete`（201/204/200 三种返回形态）。
 - 错误：`{"error": "短语"}`；额外字段只有 503 的 `detail` 与 `connect` 失败的 `status`，`detail` 不含密钥（审计接口里同名字段是调用记录内容，不是错误信息）。
   检查：`grep -rn "\"detail\"" app/routes` 除 schema 与审计字段外只在 503 分支；`grep -rn "\"status\": \"disconnected\"" app/routes/api_mcp.py` 仅连接失败分支。
-- 400：参数或业务规则不合法 —— `POST /search` 空 query、`POST /api/conversations` 的 `agent_id` 非整数、技能 source 解析失败、reindex 的 custom 参数越界、`base_url` 不以 http(s) 开头。
-  检查：`tests/test_retrieval.py::TestAsk`、`tests/test_assistant.py::TestConversationsAPI::test_message_auth_and_validation`、`tests/test_mcp.py::TestSkillReferenceValidation`。
+- 400：参数或业务规则不合法 —— `POST /search` 空 query、`POST /api/conversations` 的 `agent_id` 非整数、技能 source 解析失败、reindex 的 custom 参数越界、`base_url` 不以 http(s) 开头、作业标题/题目/参考答案或学生答案为空。
+  检查：`tests/test_retrieval.py::TestAsk`、`tests/test_assistant.py::TestConversationsAPI::test_message_auth_and_validation`、`tests/test_mcp.py::TestSkillReferenceValidation`、`tests/test_grading.py::TestAssignmentsAPI::test_missing_fields_400`。
 - 401：无 token、token 过期、`jti` 已撤销 —— 例如不带 `Authorization` 调 `GET /auth/me`。
   检查：`tests/test_auth.py::TestAuthRequired`。
-- 403：角色不符 —— 学生 `POST /materials`、学生任一 `/api/mcp/*`、学生 `PUT /api/prompt`。
-  检查：`tests/test_role.py::TestRoleRequired`、`tests/test_assistant.py::TestPromptAPI::test_student_put_forbidden`。
-- 404：不存在或跨班 —— `GET /materials/<id>` 跨班、他人会话、跨班 MCP 服务器 id、跨班技能 id，响应体与真不存在同构。
-  检查：`tests/test_isolation.py::TestCrossClassRejection`、`tests/test_assistant.py::TestConversationsAPI::test_detail_not_owned_or_cross_class_404`。
+- 403：角色不符 —— 学生 `POST /materials`、学生任一 `/api/mcp/*`、学生 `PUT /api/prompt`、学生 `POST /api/assignments`、教师调用学生提交端点。
+  检查：`tests/test_role.py::TestRoleRequired`、`tests/test_assistant.py::TestPromptAPI::test_student_put_forbidden`、`tests/test_grading.py::TestSubmissionsAPI::test_teacher_cannot_submit`。
+- 404：不存在或跨班 —— `GET /materials/<id>` 跨班、他人会话、跨班 MCP 服务器 id、跨班技能 id、跨班作业/提交 id、他人提交，响应体与真不存在同构。
+  检查：`tests/test_isolation.py::TestCrossClassRejection`、`tests/test_assistant.py::TestConversationsAPI::test_detail_not_owned_or_cross_class_404`、`tests/test_grading.py::TestPollingAPI`。
 - 409：唯一约束冲突 —— 同班重复登记 MCP 服务器名（`uq_mcp_servers_class_name`）。
   检查：`tests/test_mcp.py::TestRegistryAPI::test_create_duplicate_409`。
 - 413：超过上传上限（`UPLOAD_MAX_SIZE_MB`）；415：扩展名不在 `.txt`/`.md` 白名单（`app/services/upload.py`）。

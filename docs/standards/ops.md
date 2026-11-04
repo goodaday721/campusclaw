@@ -13,10 +13,10 @@
 
 ## 环境分级
 
-- 两级：本地开发（`.env` + 五服务 + 业务库 `campusclaw`）与测试（`campusclaw_test` 库 + `campusclaw_chunks_test` collection + 离线 fake 网关）。
+- 两级：本地开发（`.env` + 六服务 + 业务库 `campusclaw`）与测试（`campusclaw_test` 库 + `campusclaw_chunks_test` collection + 离线 fake 网关）。
   检查：`docker compose config` 中 api 服务的 `TEST_DB_NAME`、`TEST_QDRANT_HOST`；`grep -n "campusclaw_chunks_test" tests/conftest.py`。
 - 没有预发与生产环境；"发布"即本机 `docker compose up --build -d`，不要按多环境参数化。
-  检查：`docker compose ps` 五服务 running；`openspec/specs/app-runtime/spec.md` 的编排定义。
+  检查：`docker compose ps` 六服务 running；`openspec/specs/app-runtime/spec.md` 的编排定义。
 - 测试与开发共用 db 容器但库名、collection 名必须不同，禁止跨用。
   检查：`docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW DATABASES"'` 中存在 `campusclaw` 与 `campusclaw_test` 两个独立库。
 
@@ -37,6 +37,8 @@
   检查：`docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" campusclaw -e "SELECT COUNT(*) FROM mcp_call_logs"'` 重启前后数值不减少；`tests/test_mcp.py::TestToolLoop`。
 - 重启前先确认无进行中的 SSE 提问（对话区不应处于「思考中...」），避免半截回答被误认为成功。
   检查：`docker compose logs api --tail 20` 中无未结束请求时再执行 `docker compose restart api`；重启后 `messages` 表行数不变。
+- worker 可独立停止与启动：停机期间提交仍返回 202 且任务保持 `pending`；启动后超时 60 秒的 `running` 任务自动回到 `pending` 再处理，结果只写一次。
+  检查：`docker compose stop worker` 后提交 → `jobs.status='pending'`；`docker compose start worker` 后 90 秒内提交转 `succeeded`/`failed`；`tests/test_grading.py::TestWorker::test_stale_running_job_is_requeued`。
 
 ## 日志
 
@@ -46,11 +48,13 @@
   检查：`curl -i -H "X-Request-Id: trace-demo" http://localhost:8080/health` 响应头含同值，日志同值。
 - 日志不得含密码、token、网关密钥、材料正文。
   检查：`tests/test_auth.py::TestNoPlaintextLogs`；`docker compose logs api | grep -i "bearer\|password_hash"` 无匹配。
+- worker 同样单行 JSON 到 stdout，至少含 `event`、`jobId`、`submissionId`、`status`；不得输出学生答案正文或参考答案。
+  检查：`docker compose logs worker --tail 5` 每行可 `json.loads` 且无答案文本；`grep -n "answer" app/worker.py` 只在取数处，不进入日志。
 
 ## 发布与回滚
 
 - 发布步骤固定：`git pull` → `docker compose up --build -d` → `docker compose ps` → `curl /health` → 跑三条测试命令。
-  检查：`docker compose ps` 五服务 running；`curl http://localhost:8080/health`。
+  检查：`docker compose ps` 六服务 running；`curl http://localhost:8080/health`。
 - 回滚：`git checkout <上一个门禁全绿的提交>` → `docker compose up --build -d`；不使用镜像仓库与蓝绿。
   检查：`git log --oneline -3` 确认目标提交；回滚后 `docker compose exec -T api python -m pytest -q` 通过。
 - 发布不做数据回滚；如本次含迁移，先按下一节备份再发。
@@ -63,7 +67,7 @@
 - 迁移文件只允许新增文件与 `CREATE TABLE IF NOT EXISTS` 语句，不改既有列定义、不写 `DROP`。
   检查：`grep -rn "DROP \|ALTER TABLE" migrations/` 无匹配；`git diff --stat migrations/` 只新增文件。
 - 新迁移必须同时登记到 `app/__init__.py`、`tests/conftest.py`、`seeds/seed.py` 三处 MIGRATIONS。
-  检查：`grep -c '\.sql"' app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 5（同批登记同一份清单）。
+  检查：`grep -c '\.sql"' app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 6（同批登记同一份清单）。
 
 ## 备份与恢复
 
@@ -79,7 +83,7 @@
 ## 单实例与容量
 
 - 仅支持单实例部署：上传文件落在宿主机 `./uploads` 目录、运行状态在单进程内存，不做多副本、共享存储与负载均衡。
-  检查：`docker compose config --services` 五服务各一实例；README「单实例部署声明」。
+  检查：`docker compose config --services` 六服务各一实例；README「单实例部署声明」。
 - 不做应用层限流；容量靠固定配额控制：`SEARCH_PATH_LIMIT=20`、`SEARCH_FINAL_LIMIT=10`、`ASK_TOP_K=4`、`EXCERPT_LIMIT=200`、`limit` 1–200。
   检查：`grep -n "SEARCH_PATH_LIMIT\|SEARCH_FINAL_LIMIT\|ASK_TOP_K\|EXCERPT_LIMIT" .env.example`。
 - 超时基线：网关 5s 连接 / 30s 读；MCP 3s 连接 / 15s 读；qdrant 就绪探活 2s（db 探活走连接超时，不设单独常量）。

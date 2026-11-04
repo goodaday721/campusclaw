@@ -54,6 +54,18 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
+  # Async grading consumer for lesson 8. Same image as api, no HTTP port:
+  # it polls the jobs table (`FOR UPDATE SKIP LOCKED`) and is the only writer
+  # of grading results. Internal-network only.
+  worker:
+    build: .
+    command: python -m app.worker
+    env_file:
+      - .env
+    depends_on:
+      - db
+    restart: unless-stopped
+
   # Self-built MCP tool server for lesson 6. Internal only — reachable from
   # api as http://mcp-demo:8090. The Bearer token comes from MCP_AUTH_TOKEN
   # in the local .env (never committed, never baked into the image).

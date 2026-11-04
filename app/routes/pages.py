@@ -322,6 +322,43 @@ DASHBOARD_PAGE = """
       </div>
     </div>
   </div>
+
+  <div class="card" id="gradingCard">
+    <div class="card-header">📝 作业与异步批改（第 8 课）</div>
+    <div class="card-body">
+      <div class="cfg-row">
+        <label>本班作业</label>
+        <div id="assignmentList"><div class="empty" style="padding:8px 0">加载中...</div></div>
+      </div>
+      <div id="gradingTeacherForm" style="display:none">
+        <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
+        <label>作业标题</label>
+        <input type="text" id="assignmentTitle" style="margin-bottom:10px">
+        <label>题目</label>
+        <textarea id="assignmentQuestion" rows="2" style="margin-bottom:10px"></textarea>
+        <label>参考答案（异步批改依据）</label>
+        <textarea id="assignmentReference" rows="2" style="margin-bottom:10px"></textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" type="button" onclick="submitAssignment()">发布作业</button>
+          <span class="err-msg" id="assignmentErr" style="margin:0"></span>
+          <span class="success-msg" id="assignmentOk"></span>
+        </div>
+      </div>
+      <div id="gradingStudentForm" style="display:none">
+        <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
+        <label>选择作业</label>
+        <select id="submissionAssignment" style="margin-bottom:10px"></select>
+        <label>你的答案</label>
+        <textarea id="submissionAnswer" rows="4" style="margin-bottom:10px"></textarea>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn" type="button" onclick="submitSubmission()">提交（异步批改）</button>
+          <span class="err-msg" id="submissionErr" style="margin:0"></span>
+          <span class="success-msg" id="submissionOk"></span>
+        </div>
+        <div id="submissionStatus" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -1043,6 +1080,110 @@ async function loadMcpCallLogs() {
   } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
 }
 
+// ============ 第8课：作业与异步批改 ============
+let gradingPollTimer = null;
+const GRADING_STATUS = {pending: '排队中', running: '批改中', succeeded: '已完成', failed: '失败'};
+
+async function loadAssignments() {
+  const list = document.getElementById('assignmentList');
+  const select = document.getElementById('submissionAssignment');
+  if (!list) return;
+  try {
+    const res = await api('/api/assignments');
+    const rows = (await res.json()).assignments || [];
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty" style="padding:8px 0">本班暂无作业</div>';
+    } else {
+      list.innerHTML = rows.map(a => `
+        <div class="skill-item" style="display:block">
+          <div><b>${escapeHtml(a.title)}</b>
+            <span class="tag">作业#${a.id}</span>
+            <span style="color:#aa9999;font-size:11px">${escapeHtml((a.createdAt || '').replace('T', ' '))}</span>
+          </div>
+          <div style="font-size:12px;color:#7a6a66;margin-top:3px">${escapeHtml(a.question).slice(0, 120)}</div>
+        </div>`).join('');
+    }
+    if (select) {
+      select.innerHTML = rows.map(a => `<option value="${a.id}">#${a.id} ${escapeHtml(a.title)}</option>`).join('');
+    }
+  } catch (e) { list.innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
+async function submitAssignment() {
+  const errEl = document.getElementById('assignmentErr');
+  const okEl = document.getElementById('assignmentOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  const title = document.getElementById('assignmentTitle').value.trim();
+  const question = document.getElementById('assignmentQuestion').value.trim();
+  const reference = document.getElementById('assignmentReference').value.trim();
+  if (!title || !question || !reference) { errEl.textContent = '标题、题目、参考答案必填'; return; }
+  try {
+    const res = await api('/api/assignments', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({title, question, reference_answer: reference})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { errEl.textContent = '发布失败: ' + (d.error || res.status); return; }
+    okEl.textContent = '已发布: ' + d.assignment.title;
+    ['assignmentTitle', 'assignmentQuestion', 'assignmentReference']
+      .forEach(id => { document.getElementById(id).value = ''; });
+    await loadAssignments();
+  } catch (e) { errEl.textContent = '发布失败: 网络错误'; }
+}
+
+async function submitSubmission() {
+  const errEl = document.getElementById('submissionErr');
+  const okEl = document.getElementById('submissionOk');
+  const box = document.getElementById('submissionStatus');
+  errEl.textContent = ''; okEl.textContent = ''; box.innerHTML = '';
+  const assignmentId = document.getElementById('submissionAssignment').value;
+  const answer = document.getElementById('submissionAnswer').value.trim();
+  if (!assignmentId) { errEl.textContent = '请选择作业'; return; }
+  if (!answer) { errEl.textContent = '答案不能为空'; return; }
+  try {
+    const res = await api(`/api/assignments/${assignmentId}/submissions`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({answer})
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { errEl.textContent = '提交失败: ' + (d.error || res.status); return; }
+    okEl.textContent = '已提交，任务 #' + d.taskId + '（异步批改中）';
+    await pollSubmission(d.submissionId);
+  } catch (e) { errEl.textContent = '提交失败: 网络错误'; }
+}
+
+async function pollSubmission(submissionId) {
+  const box = document.getElementById('submissionStatus');
+  let attempts = 0;
+  const tick = async () => {
+    attempts += 1;
+    try {
+      const res = await api('/api/submissions/' + submissionId);
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        box.innerHTML = '<div class="err-msg">查询失败: ' + escapeHtml(d.error || res.status) + '</div>';
+        return;
+      }
+      const label = GRADING_STATUS[d.status] || d.status;
+      const hasScore = d.score !== null && d.score !== undefined;
+      box.innerHTML = `
+        <div class="skill-item" style="display:block">
+          <div>提交#${d.id} <span class="tag ${d.status === 'succeeded' ? 'on' : ''}">${escapeHtml(label)}</span>
+            ${hasScore ? `<span class="tag on">${d.score} 分</span>` : ''}
+          </div>
+          ${d.feedback ? `<div style="font-size:12px;color:#7a6a66;margin-top:4px">${escapeHtml(d.feedback)}</div>` : ''}
+        </div>`;
+      if ((d.status === 'pending' || d.status === 'running') && attempts < 60) {
+        gradingPollTimer = setTimeout(tick, 2000);
+      }
+    } catch (e) {
+      box.innerHTML = '<div class="err-msg">查询失败: 网络错误</div>';
+    }
+  };
+  if (gradingPollTimer) clearTimeout(gradingPollTimer);
+  await tick();
+}
+
 async function init() {
   if (!getToken()) { window.location.href = '/login?next=/dashboard'; return; }
   try {
@@ -1063,6 +1204,9 @@ async function init() {
       await loadMcp();
     }
 
+    document.getElementById('gradingTeacherForm').style.display = user.role === 'teacher' ? 'block' : 'none';
+    document.getElementById('gradingStudentForm').style.display = user.role === 'student' ? 'block' : 'none';
+    await loadAssignments();
     await loadMaterials();
     await initAssistant();
   } catch (e) { /* api() 已在 401 时跳转 */ }

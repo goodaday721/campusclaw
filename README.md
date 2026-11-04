@@ -1,6 +1,6 @@
 ## 价值
 
-为校园教学提供最小可用的身份认证、角色权限、班级数据隔离、知识库材料管理闭环、限定班级范围且可溯源的知识库检索问答、教师可配置且流式输出的「解题助手」智能体，以及可登记外部 MCP 工具服务器、由宿主代为执行工具调用的智能体能力，作为后续教学功能的安全底座。
+为校园教学提供最小可用的身份认证、角色权限、班级数据隔离、知识库材料管理闭环、限定班级范围且可溯源的知识库检索问答、教师可配置且流式输出的「解题助手」智能体、可登记外部 MCP 工具服务器并由宿主代为执行工具调用的智能体能力，以及作业提交与异步批改（任务入队、worker 消费者、结果轮询），作为后续教学功能的安全底座。
 
 ## 场景
 
@@ -8,7 +8,7 @@
 
 ## 本学期不做
 
-作业提交与批改、异步任务队列、SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、技能的智能匹配（工具由技能显式引用、宿主按需代执行）。
+SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、技能的智能匹配（工具由技能显式引用、宿主按需代执行）、横向扩展与优先级队列。
 
 ## 快速开始（Docker Compose，唯一交付形态）
 
@@ -21,10 +21,10 @@ cp .env.example .env
 #    （JWT_SECRET 可用 python -c "import secrets; print(secrets.token_hex(32))" 生成）
 #    使用向量检索/问答还需填写 EMBED_API_KEY/EMBED_MODEL 与 CHAT_API_KEY/CHAT_MODEL
 
-# 2. 一键构建并启动（web / api / db / qdrant / mcp-demo 五服务）
+# 2. 一键构建并启动（web / api / db / qdrant / mcp-demo / worker 六服务）
 docker compose up --build -d
 
-# 3. 查看服务状态（五个服务均应为 running）
+# 3. 查看服务状态（六个服务均应为 running）
 docker compose ps
 
 # 4. 验证
@@ -34,7 +34,7 @@ docker compose ps
 ```
 
 > web 服务是唯一映射宿主机端口的入口（默认 8080，由 `.env` 的 `WEB_PORT` 控制）；
-> api、MySQL 与 Qdrant 均只在 Compose 内部网络，宿主机无法直连。
+> api、MySQL、Qdrant 与 worker 均只在 Compose 内部网络，宿主机无法直连。
 > 模型网关（嵌入/对话）仅由 api 服务端调用，浏览器拿不到网关密钥，也不能直连向量库。
 
 ## 预置账号
@@ -138,7 +138,36 @@ curl -X POST http://localhost:8080/auth/logout -H "Authorization: Bearer <token>
 docker compose exec api python apitest/run_all.py
 ```
 
-覆盖：登录/身份、材料列表、关键字检索、班级提示词读写、技能增改删、智能体列表、新建会话与 SSE 流式提问（含落库核对）、MCP 服务器登记/连接/工具清单/断开与学生提问命中工具的全链路（含审计核对）。
+覆盖：登录/身份、材料列表、关键字检索、班级提示词读写、技能增改删、智能体列表、新建会话与 SSE 流式提问（含落库核对）、MCP 服务器登记/连接/工具清单/断开与学生提问命中工具的全链路（含审计核对）、作业创建/提交 202/任务落库/重复提交幂等/轮询结果与跨班 404。
+
+## 作业与异步批改（第 8 课）
+
+- **教师**：在仪表盘「作业与异步批改」卡发布作业（标题、题目、参考答案），可查看本班作业列表。
+- **学生**：选择作业提交答案 → 接口返回 `202` 与 `taskId`；页面轮询 `GET /api/submissions/<id>`，状态从 `pending → running → succeeded/failed`，完成后展示分数与评语。
+- **异步实现**：`jobs` 表即队列（无 Redis/Celery），独立 `worker` 容器（`python -m app.worker`）用 `FOR UPDATE SKIP LOCKED` 领取任务；提交与任务同事务写入，结果与任务状态同事务写回；启动时把超过 60 秒的 `running` 重新入队。
+- **幂等**：`submissions` 的 `UNIQUE(assignment_id, student_id)` 与 `jobs.dedupe_key=grade:<submission_id>` 保证重复提交/重投只产生一份结果。
+
+接口（均需 Bearer 令牌）：
+
+```text
+POST /api/assignments                             教师创建作业（201）
+GET  /api/assignments                             本班作业列表
+POST /api/assignments/<id>/submissions            学生提交（202 + taskId）
+GET  /api/submissions/<id>                        轮询结果（本人学生或本班教师）
+```
+
+验证路径：
+
+```bash
+docker compose exec -T api python -m pytest tests/test_grading.py -q   # 正常/失败/边界
+docker compose exec -T api python e2e_test.py                          # 含提交→批改→轮询链路
+docker compose exec -T api python apitest/run_all.py                   # 含 202、幂等、跨班 404
+docker compose exec -T api python scripts/check_security.py           # SEC-05/06
+```
+
+worker 可独立停启：停机期间提交仍成功且任务保持 `pending`；启动后自动处理。批改失败按 `max_attempts=3` 重试，最终置 `failed` 并保留可读原因。
+
+安全自查与风险记录见 `reports/`：`security-precheck.md`（SEC-01~07 总表）、`risk-authz.md`、`risk-concurrency.md`、`risk-transaction.md`、`security-baseline.md`、`review-01.md`。本课按任务要求保留两条红项（SEC-06 依赖漏洞工具缺失、SEC-07 审计字段不足），进入第 9 课修复。
 
 ## 工程规范与小组项目（第 7 课）
 
@@ -146,7 +175,7 @@ docker compose exec api python apitest/run_all.py
 
 - **常驻约束入口**：[AGENTS.md](AGENTS.md)。任何协作者或编码代理先读它；每条规则都带一行「检查：」说明如何验证。
 - **规范明细**：`docs/standards/` 下 8 份——产品设计、后端开发、安全开发、测试、部署运维（必修五类），以及 AI 应用、数据、评审与完成定义（补充三类）。
-- **规约**：`openspec/specs/` 为 11 个能力主 spec（133 条 Scenario）；能力与场景的对应关系见 `docs/lesson-07/ability-scenarios.md`。
+- **规约**：`openspec/specs/` 为 13 个能力主 spec；能力与场景的对应关系见 `docs/lesson-07/ability-scenarios.md`。
 - **变更流程**：每次改动开一条变更，名称为 `YYYY-MM-DD-短横小写英文名`，四份文件齐全并通过 `openspec validate <变更名> --strict`，验收后归档到 `openspec/changes/archive/`。
 - **提交信息**：写清「改了什么、依据哪条规约」。
 - **骨架基线**：`/health`（存活）+ `/health/ready`（依赖连通）+ 单行 JSON 访问日志（`ts/level/request_id/method/path/status/ms/class_id/user_id`，响应头回显 `X-Request-Id`），标签 `v0.0.1-skeleton`。
@@ -190,4 +219,4 @@ docker compose exec api python apitest/run_all.py
 
 ## 技术栈
 
-Flask + MySQL 8.0（PyMySQL，ngram 全文索引）+ Qdrant 向量库 + OpenAI 兼容模型网关（仅服务端）+ Nginx 反向代理；Docker Compose 五服务编排（web / api / db / qdrant / mcp-demo），仅 web 映射宿主机端口。
+Flask + MySQL 8.0（PyMySQL，ngram 全文索引）+ Qdrant 向量库 + OpenAI 兼容模型网关（仅服务端）+ Nginx 反向代理；Docker Compose 六服务编排（web / api / db / qdrant / mcp-demo / worker），仅 web 映射宿主机端口。

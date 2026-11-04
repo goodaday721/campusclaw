@@ -16,7 +16,7 @@
 ## 用例组织：正常 / 失败 / 边界
 
 - 每个行为至少三条用例：正常路径一条、失败路径一条（越权或非法输入）、边界一条（空串、超限、恰好等于阈值）。
-  检查：抽查 `tests/test_materials.py`（`TestUploadMaterial` 正常、`TestUploadConstraints` 失败与边界）与 `tests/test_mcp.py`（`TestRegistryAPI` 正常、`400/409` 失败）。
+  检查：抽查 `tests/test_materials.py`（`TestUploadMaterial` 正常、`TestUploadConstraints` 失败与边界）、`tests/test_mcp.py`（`TestRegistryAPI` 正常、`400/409` 失败）与 `tests/test_grading.py`（提交正常、网关失败重试、重复提交与跨班边界）。
 - 失败用例必须断言"没有副作用"：不落盘、不写库、不改状态。
   检查：`tests/test_materials.py::TestUploadConstraints` 断言 `materials` 与 `knowledge_entries` 无新记录；`tests/test_isolation.py::TestDirectURLBypass`。
 - 鉴权类用例必须同时测 401（无 token）与 403（角色不符），且覆盖绕过前端直调。

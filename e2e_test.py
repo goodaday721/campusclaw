@@ -472,6 +472,53 @@ def run_with_test_client():
             "ORDER BY id DESC LIMIT 1", (tool_cid,))
     check("denied audit row recorded", denied_row and denied_row["status"] == "denied")
 
+    # 10.7 Lesson-8: assignments + async grading (worker processes one job)
+    print("  --- Lesson 8: assignments / async grading ---")
+    r = ta.post("/api/assignments", json={
+        "title": "e2e 方程作业", "question": "解方程 2x + 3 = 11",
+        "reference_answer": "x = 4"})
+    check("teacher create assignment 201", r.status_code == 201,
+          f"status={r.status_code}")
+    assignment_id = r.get_json()["assignment"]["id"]
+    r = sa.post(f"/api/assignments/{assignment_id}/submissions", json={"answer": "x = 4"})
+    check("student submit 202 + taskId", r.status_code == 202
+          and r.get_json()["taskId"] > 0, f"status={r.status_code}")
+    submission_id = r.get_json()["submissionId"]
+    task_id = r.get_json()["taskId"]
+    r2 = sa.post(f"/api/assignments/{assignment_id}/submissions", json={"answer": "x = 5"})
+    check("resubmit reuses submission and task",
+          r2.status_code == 202 and r2.get_json()["submissionId"] == submission_id
+          and r2.get_json()["taskId"] == task_id)
+    check("cross-class submit 404",
+          sb.post(f"/api/assignments/{assignment_id}/submissions",
+                  json={"answer": "x = 4"}).status_code == 404)
+    check("teacher cannot submit 403",
+          ta.post(f"/api/assignments/{assignment_id}/submissions",
+                  json={"answer": "x = 4"}).status_code == 403)
+
+    from app import worker
+
+    model_gateway.chat = lambda cfg, messages: (
+        '{"score": 90, "feedback": "e2e 批改：结论正确。"}'
+    )
+    check("worker claims one job",
+          worker.run_once(Config().db_config(), Config()) is True)
+    sub = query_one(
+        db, "SELECT status, score, feedback FROM submissions WHERE id=%s",
+        (submission_id,))
+    check("submission succeeded with score 90",
+          sub and sub["status"] == "succeeded" and sub["score"] == 90)
+    job = query_one(db, "SELECT status FROM jobs WHERE id=%s", (task_id,))
+    check("job succeeded", job and job["status"] == "succeeded")
+    r = sa.get(f"/api/submissions/{submission_id}")
+    check("polling shows succeeded + score",
+          r.status_code == 200 and r.get_json()["status"] == "succeeded"
+          and r.get_json()["score"] == 90)
+    check("other student polling 404",
+          sb.get(f"/api/submissions/{submission_id}").status_code == 404)
+    check("worker idle when queue empty",
+          worker.run_once(Config().db_config(), Config()) is False)
+
     # 11. Repeated startup no duplicate seed
     counts_before = {
         t: query_one(db, f"SELECT count(*) AS n FROM {t}")["n"]

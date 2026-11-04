@@ -4,14 +4,14 @@
 
 ## 1. 技术栈与硬性约束
 
-- 运行形态只有一种：`docker compose up --build -d` 拉起 web / api / db / qdrant / mcp-demo 五服务，不提供本机直跑路径。
-  检查：`docker compose config --services` 输出恰为 web、api、db、qdrant、mcp-demo。
-- 只有 web（Nginx）映射宿主机端口（`${WEB_PORT:-8080}:80`）；api / db / qdrant / mcp-demo 一律不映射。
+- 运行形态只有一种：`docker compose up --build -d` 拉起 web / api / db / qdrant / mcp-demo / worker 六服务，不提供本机直跑路径。
+  检查：`docker compose config --services` 输出恰为 web、api、db、qdrant、mcp-demo、worker。
+- 只有 web（Nginx）映射宿主机端口（`${WEB_PORT:-8080}:80`）；api / db / qdrant / mcp-demo / worker 一律不映射。
   检查：`docker compose config` 中 `ports` 只出现在 web 段。
 - 依赖只在根 `requirements.txt`（上下界）与 `mcp-server/requirements.txt`（`==` 固定版本）声明；禁止在容器内临时 pip 安装。
   检查：`docker compose exec -T api pip check` 无冲突；`git diff --stat requirements.txt mcp-server/requirements.txt`。
 - 数据库变更只经 `migrations/00N_*.sql`，并在 `app/__init__.py`、`tests/conftest.py`、`seeds/seed.py` 三处 MIGRATIONS 同步登记。
-  检查：`grep -c "005_mcp.sql" app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 1。
+  检查：`grep -c "006_grading.sql" app/__init__.py tests/conftest.py seeds/seed.py` 三处均为 1。
 - 配置一律经 `app/config.py` 从环境变量读取：必填缺失即启动失败，可选缺失走降级。
   检查：`docker compose run --rm -e DB_NAME= api python run.py` 退出码 1，stderr 含 `Startup error: Missing required environment variable: DB_NAME`。
 
@@ -25,8 +25,8 @@
   检查：`grep -rn "SELECT\|INSERT\|UPDATE\|DELETE FROM" app/routes` 无匹配。
 - 第三方调用只出现在 services：模型网关在 `app/services/model_gateway.py`，MCP 出站在 `app/services/mcp_client.py`。
   检查：`grep -rn "requests.post\|requests.get" app/` 仅命中这两个文件与 `app/routes/health.py` 的就绪探活。
-- 新表必须配套 `app/repositories/` 下的同名模块，SQL 全参数化；按 id 的资源读取必须走带作用域的 `find_by_id_scoped_to_class` / `find_owned` / `mcp.find`。
-  检查：`grep -rn "find_owned\|find_by_id_scoped_to_class\|mcp.find(" app/routes` 覆盖全部按 id 读取；`grep -rn "conversations.find_by_id(" app/` 无匹配。
+- 新表必须配套 `app/repositories/` 下的同名模块，SQL 全参数化；按 id 的资源读取必须走带作用域的 `find_by_id_scoped_to_class` / `find_owned` / `mcp.find` / `grading.find_*`。
+  检查：`grep -rn "find_owned\|find_by_id_scoped_to_class\|mcp.find(\|grading.find" app/routes` 覆盖全部按 id 读取；`grep -rn "conversations.find_by_id(" app/` 无匹配。
 
 ## 3. 接口与响应约定
 
@@ -47,7 +47,7 @@
 
 - 身份只来自 `Authorization: Bearer <JWT>` 加 `sessions` 表校验；payload 只含 sub/jti/iat/exp，角色与班级每请求从 `users` 表实时读取。
   检查：`docker compose exec -T api python -m pytest tests/test_auth.py::TestAuthRequired -q` 通过（含篡改 payload 与逐请求读库两个用例）。
-- 每个受保护端点挂 `@auth_required`；教师专属写操作再挂 `@role_required("teacher")`，学生越权一律 403；学生可写的只有会话与消息（归属校验，无角色装饰器）。
+- 每个受保护端点挂 `@auth_required`；教师专属写操作再挂 `@role_required("teacher")`，学生越权一律 403；学生可写的只有会话、消息与本人作业提交（归属校验，无角色装饰器，提交端点显式拒绝非学生）。
   检查：`grep -rn "@role_required" app/routes` 与 `grep -rn "@.*_bp.route(\"/api/conversations" app/routes` 对照，其余写路由均有角色装饰器；`tests/test_role.py::TestRoleRequired`。
 - 按 id 的读写必须带 `class_id` 条件；跨班一律 404。
   检查：`tests/test_isolation.py::TestDirectURLBypass`、`tests/test_assistant.py::TestConversationsAPI::test_detail_not_owned_or_cross_class_404`。
@@ -74,13 +74,13 @@
 ## 6. 部署交付
 
 - 交付物是 compose 加 `.env.example`；首次启动自动迁移、种子、切片回填，无需手工初始化。
-  检查：`docker compose up --build -d` 后 `docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" campusclaw -e "SHOW TABLES"'` 列出全部 16 张表，且 `SELECT COUNT(*) FROM users` 为 4。
+  检查：`docker compose up --build -d` 后 `docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" campusclaw -e "SHOW TABLES"'` 列出全部 19 张表，且 `SELECT COUNT(*) FROM users` 为 4。
 - `/health` 只报存活（恒 200，不探依赖）；`/health/ready` 探 db 与 qdrant，任一不可用返回 503。
   检查：`curl http://localhost:8080/health`、`curl -i http://localhost:8080/health/ready`、`tests/test_health_ready.py`。
 - 数据落在 named volume `mysql_data`、`qdrant_data` 与宿主机 `./uploads`；`down -v` 只用于主动重置。
   检查：`docker volume ls | grep -E "mysql_data|qdrant_data"`；`docker compose down && docker compose up -d` 后数据仍在。
 - 仅支持单实例：不做多副本、共享存储与负载均衡。
-  检查：`docker compose config --services` 为五服务各一实例；`docker compose ps` 五服务 running。
+  检查：`docker compose config --services` 为六服务各一实例；`docker compose ps` 六服务 running。
 
 明细：`docs/standards/ops.md`
 
@@ -102,7 +102,7 @@
 ## 8. 文档与变更流程
 
 - 行为变更先落 openspec change（proposal / design / tasks / specs），再动代码；完成后归档到 `openspec/changes/archive/<日期>-<变更名>/`，能力变更合并回 `openspec/specs/`。
-  检查：`openspec list` 输出 `No active changes found.`；`openspec list --specs` 列出 11 个能力 spec。
+  检查：`openspec list` 输出 `No active changes found.`；`openspec list --specs` 列出 13 个能力 spec。
 - README 必须同步能力、启动命令与验证路径；新增页面或接口要写进验证路径。
   检查：`git diff --stat README.md`；`grep -n "验证" README.md`。
 - `docs/standards/` 的明细与代码同批更新，不允许只改代码不改规范。
@@ -112,14 +112,12 @@
 
 ## 不做清单（本学期）
 
-- 不做作业提交与批改。
-  检查：`grep -rni "grade\|homework\|submission" app/ migrations/` 无匹配。
-- 不做异步任务队列：上传后同步切分与嵌入，失败只把切片的 `embedding_status` 置 `failed`，由教师重建。
-  检查：`grep -rn "celery\|rq\|queue\|worker" app/ requirements.txt` 无匹配；`tests/test_retrieval.py::TestUploadIndexingFailure`。
 - 不做 MCP resources / prompts 能力，不做 stdio 传输，不引入第三方 MCP SDK。
   检查：`grep -ri "resources/list\|prompts/list\|stdio\|mcp-sdk" app/ mcp-server/ requirements.txt` 无匹配。
 - 不做多实例部署、SSO、生产级高可用，也不做应用层限流。
-  检查：`docker compose config --services` 仍为五服务；`grep -rn "rate_limit\|throttle" app/` 无匹配。
+  检查：`docker compose config --services` 仍为六服务；`grep -rn "rate_limit\|throttle" app/` 无匹配。
+- 异步批改只经 `jobs` 表 + `worker` 容器：提交与任务同事务、结果与任务状态同事务、幂等键 `grade:<submission_id>`；`worker` 以 `FOR UPDATE SKIP LOCKED` 领取，启动时把超过 60 秒的 `running` 重新入队；批改结果只写一次。
+  检查：`tests/test_grading.py::TestWorker`（成功、重试、重放、空闲）、`tests/test_grading.py::TestSubmissionsAPI::test_resubmit_is_idempotent`。
 - 不做技能的智能匹配，不做内置工具之外的自动执行。
   检查：`tests/test_mcp.py::TestReferenceAndSanitize::test_parse_reference`、`tests/test_mcp.py::TestToolLoop::test_hallucinated_tool_not_attributed`。
 

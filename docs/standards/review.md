@@ -35,7 +35,7 @@
 ## 门禁必跑命令
 
 - 门禁命令固定五条，缺一条视为未完成：pytest、e2e、apitest、运行态核对、openspec 校验。
-  检查：依次运行 `docker compose exec -T api python -m pytest -q`、`docker compose exec -T api python e2e_test.py`（或宿主机 `python e2e_test.py --http`）、`docker compose exec -T api python apitest/run_all.py`、`docker compose ps` 五服务 running 且 `curl http://localhost:8080/health` 返回 `{"status":"ok"}`、`openspec validate --all --strict --no-interactive` 末行 `Totals: 11 passed, 0 failed` 且 `openspec list` 输出 `No active changes found.`；任一非 0 即阻断。
+  检查：依次运行 `docker compose exec -T api python -m pytest -q`、`docker compose exec -T api python e2e_test.py`（或宿主机 `python e2e_test.py --http`）、`docker compose exec -T api python apitest/run_all.py`、`docker compose ps` 六服务 running 且 `curl http://localhost:8080/health` 返回 `{"status":"ok"}`、`openspec validate --all --strict --no-interactive` 末行 `Totals: 13 passed, 0 failed` 且 `openspec list` 输出 `No active changes found.`；任一非 0 即阻断。
 
 ## 例外书面化
 

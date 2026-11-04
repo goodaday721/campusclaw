@@ -51,6 +51,7 @@ MIGRATIONS = [
     "003_knowledge_chunks.sql",
     "004_assistant.sql",
     "005_mcp.sql",
+    "006_grading.sql",
 ]
 
 # Deterministic offline fake for the embedding gateway: normalized bag of
