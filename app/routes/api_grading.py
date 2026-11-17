@@ -14,6 +14,7 @@ from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.middleware.role import role_required
 from app.repositories import grading as grading_repo
+from app.services import audit
 
 grading_bp = Blueprint("api_grading", __name__)
 
@@ -90,6 +91,15 @@ def create_assignment():
         )
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="create",
+        target_type="assignment",
+        target_id=assignment_id,
+        detail={"title": title},
+    )
     return jsonify({"assignment": _assignment_dict(row)}), 201
 
 
@@ -126,6 +136,15 @@ def submit_assignment(assignment_id: int):
         job = grading_repo.find_job(conn, task_id)
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=student_id,
+        action="submit",
+        target_type="submission",
+        target_id=submission_id,
+        detail={"assignmentId": assignment_id, "taskId": task_id},
+    )
     return jsonify({
         "taskId": task_id,
         "submissionId": submission_id,

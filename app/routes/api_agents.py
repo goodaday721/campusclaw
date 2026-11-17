@@ -13,6 +13,7 @@ from app.middleware.role import role_required
 from app.repositories import agents as agents_repo
 from app.repositories import skills as skills_repo
 from app.repositories.materials import MaterialsRepository
+from app.services import audit
 
 agents_bp = Blueprint("api_agents", __name__)
 
@@ -113,6 +114,15 @@ def create_agent():
         created = agents_repo.find(conn, agent_id, class_id)
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=g.current_user["userId"],
+        action="create",
+        target_type="agent",
+        target_id=agent_id,
+        detail={"name": created["name"], "enabled": bool(created["enabled"])},
+    )
     return jsonify({"agent": _serialize(created)}), 201
 
 
@@ -152,4 +162,13 @@ def update_agent(agent_id: int):
         updated = agents_repo.find(conn, agent_id, class_id)
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=g.current_user["userId"],
+        action="update",
+        target_type="agent",
+        target_id=agent_id,
+        detail={"name": updated["name"], "enabled": bool(updated["enabled"])},
+    )
     return jsonify({"agent": _serialize(updated)}), 200

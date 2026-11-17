@@ -11,7 +11,7 @@ from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.repositories import sessions as sessions_repo
 from app.repositories.users import UserRepository
-from app.services import token_auth
+from app.services import audit, token_auth
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -46,6 +46,16 @@ def login():
     finally:
         conn.close()
 
+    # SEC-07: one audit row per login (actor + class known only after success).
+    audit.record(
+        current_app.config["DB"],
+        class_id=user["class_id"],
+        actor_id=user["id"],
+        action="login",
+        target_type="session",
+        detail={"role": user["role"]},
+    )
+
     return (
         jsonify(
             {
@@ -66,6 +76,14 @@ def logout():
         sessions_repo.delete(conn, g.token_jti)
     finally:
         conn.close()
+
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="logout",
+        target_type="session",
+    )
 
     return jsonify({"ok": True}), 200
 

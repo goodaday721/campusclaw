@@ -15,7 +15,7 @@ from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.middleware.role import role_required
 from app.repositories import mcp as mcp_repo
-from app.services import mcp_client
+from app.services import audit, mcp_client
 from app.services.mcp_client import McpError
 
 mcp_bp = Blueprint("api_mcp", __name__)
@@ -118,6 +118,15 @@ def create_server():
         row = mcp_repo.find(conn, server_id, g.current_user["classId"])
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="create",
+        target_type="mcp_server",
+        target_id=server_id,
+        detail={"name": row["name"], "baseUrl": row["base_url"]},
+    )
     return jsonify({"server": _server_dict(row, tools_count=0)}), 201
 
 
@@ -148,6 +157,15 @@ def update_server(server_id: int):
         row = mcp_repo.find(conn, server_id, g.current_user["classId"])
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="update",
+        target_type="mcp_server",
+        target_id=server_id,
+        detail={"name": row["name"], "status": row["status"]},
+    )
     return jsonify({"server": _server_dict(row, tools_count=0)}), 200
 
 
@@ -157,12 +175,22 @@ def update_server(server_id: int):
 def delete_server(server_id: int):
     conn = get_connection(current_app.config["DB"])
     try:
-        if _find_or_none(conn, server_id) is None:
+        existing = _find_or_none(conn, server_id)
+        if existing is None:
             return jsonify({"error": "not found"}), 404
         mcp_repo.delete(conn, server_id)
         conn.commit()
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="delete",
+        target_type="mcp_server",
+        target_id=server_id,
+        detail={"name": existing["name"]},
+    )
     return "", 204
 
 
@@ -188,6 +216,15 @@ def connect_server(server_id: int):
             mcp_repo.clear_tools(conn, server_id)
             mcp_repo.set_status(conn, server_id, "disconnected")
             conn.commit()
+            audit.record(
+                current_app.config["DB"],
+                class_id=g.current_user["classId"],
+                actor_id=g.current_user["userId"],
+                action="connect",
+                target_type="mcp_server",
+                target_id=server_id,
+                detail={"status": "disconnected", "reason": str(exc)[:200]},
+            )
             return jsonify({
                 "error": f"连接失败：{exc}",
                 "status": "disconnected",
@@ -200,6 +237,15 @@ def connect_server(server_id: int):
         cached = mcp_repo.tools_for_server(conn, server_id)
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="connect",
+        target_type="mcp_server",
+        target_id=server_id,
+        detail={"status": "connected", "tools": len(cached)},
+    )
     return jsonify({
         "server": _server_dict(row, tools_count=len(cached)),
         "tools": [_tool_dict(t) for t in cached],
@@ -220,6 +266,15 @@ def disconnect_server(server_id: int):
         row = mcp_repo.find(conn, server_id, g.current_user["classId"])
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="disconnect",
+        target_type="mcp_server",
+        target_id=server_id,
+        detail={"name": row["name"]},
+    )
     return jsonify({"server": _server_dict(row, tools_count=0)}), 200
 
 

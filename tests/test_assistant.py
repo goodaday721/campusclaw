@@ -298,7 +298,7 @@ class TestConversationsAPI:
         assert [r["role"] for r in rows] == ["user", "assistant"]
         assert rows[1]["content"] == answer
         assert json.loads(rows[1]["citations"])[0]["materialTitle"] == "rare.txt"
-        assert rows[1]["skill_name"] == "方程解题引导"
+        assert rows[1]["skill_name"] == "方程解题引导、错题讲解"
 
         conv = student_a.get(f"/api/conversations/{cid}").get_json()
         assert conv["conversation"]["title"].startswith(RARE_TOKEN)

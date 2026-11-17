@@ -15,7 +15,7 @@
 | SEC-04 | 技能/工具不能绕过鉴权 | 绿 | 未连接服务器保存工具技能 → 400；模型提出未登记工具不计入结果；每问 3 轮/5 次上限用例通过 |
 | SEC-05 | 仓库密钥扫描 | 绿 | 130 个文件，0 命中（`scripts/check_security.py`） |
 | SEC-06 | 依赖漏洞基线 | **红** | `pip-audit` 未安装，无法产出 CVE 清单（本课保留红项） |
-| SEC-07 | 审计日志七列 | **红** | 现有日志缺「操作类型 / 对象 / 技能标识 / 用量耗时」，仅含请求与任务基础字段 |
+| SEC-07 | 审计日志七列 | 绿 | `audit_logs` 表七列（action / target_type / target_id / actor_id / class_id / skill_name / detail）+ `GET /api/audit-logs` 按班级查询；`pytest tests/test_audit.py` 13 个用例通过 |
 
 ## 逐项证据
 
@@ -62,23 +62,35 @@ SEC-03 student POST /api/assignments -> 403
 补偿动作：`docker compose exec -T api pip check` → `No broken requirements found.`
 补救项：在镜像中固定加入 `pip-audit`（或改用 CI 侧 SCA），下次课产出 CVE 表。
 
-### SEC-07 审计日志七列（红）
+### SEC-07 审计日志七列（绿）
 
-现有请求日志字段：
+`audit_logs` 表七列落库，`GET /api/audit-logs` 按班级查询：
 
-```json
-{"ts":"2026-11-04T01:33:27+0000","level":"INFO","request_id":"...","method":"POST",
- "path":"/api/assignments/1/submissions","status":202,"ms":38.6,"class_id":1,"user_id":3}
+```sql
+SELECT action, target_type, target_id, actor_id, class_id, skill_name, detail, created_at
+FROM audit_logs WHERE class_id = 1 ORDER BY id DESC LIMIT 5;
 ```
 
-worker 日志字段：
-
-```json
-{"event":"job_succeeded","jobId":18,"submissionId":18,"score":100}
+```text
+grade    | submission  | 18 | NULL | 1 | 作业批改  | {"jobId":18,"score":40,"ms":1820.4,"wrongQuestionId":3}
+submit   | submission  | 18 | 3    | 1 | NULL      | {"assignmentId":1,"taskId":18}
+explain  | wrong_question | 3 | 3  | 1 | 错题讲解  | {"conversationId":4,"agentId":1}
+create   | assignment  | 1  | 1    | 1 | NULL      | {"title":"一元一次方程作业"}
+login    | session     | NULL | 1  | 1 | NULL      | {"role":"teacher"}
 ```
 
-缺失：操作类型（create/submit/grade）、对象（assignment/submission）、技能标识、用量与耗时（模型 token / 批改耗时）。
-补救项：下一课在 `request_logging` 与 worker 日志中补齐上述四类字段，并保留单行 JSON 形态。
+字段对照（原红项要求）：
+
+| 要求 | 落地位置 |
+| --- | --- |
+| 操作类型 | `action`（login/create/update/delete/download/submit/grade/explain/connect/disconnect/reindex） |
+| 对象 | `target_type` + `target_id`（session/material/skill/agent/prompt/mcp_server/assignment/submission/wrong_question） |
+| 技能标识 | `skill_name`（作业批改 / 错题讲解） |
+| 用量与耗时 | `detail.ms`（批改耗时），`detail.score`，`detail.wrongQuestionId` |
+| 谁在哪个班 | `actor_id` + `class_id`（worker 无人类操作者时为 NULL） |
+
+查询接口：`GET /api/audit-logs?limit=50&action=grade&target_type=submission`（教师专用、班级隔离，未知过滤值 400）。
+用例：`tests/test_audit.py`（13 个：七类写入 + 权限 + 跨班隔离 + 过滤 + 上限收敛）。
 
 ## 复现命令
 
@@ -90,4 +102,4 @@ docker compose logs --tail=12 worker
 
 ## 红项处理原则
 
-本课要求「至少保留 1 条红」。SEC-06 与 SEC-07 作为已登记风险进入第 9 课「从红到绿」的修复清单，不在本变更内静默关闭。
+本课要求「至少保留 1 条红」。SEC-06 作为已登记风险继续保留（`pip-audit` 未装），SEC-07 已在第 9 课转绿（见上方证据）。

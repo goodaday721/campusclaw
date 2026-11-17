@@ -137,6 +137,20 @@ class TestMcpServerProtocol:
         text = resp.get_json()["result"]["content"][0]["text"]
         assert "去括号" in text  # guidance present
 
+    def test_tools_call_unit_convert_accepts_compound_units(self, mcp_app, monkeypatch):
+        """The schema example ("如 千米/km") baits models into slash compound
+        units — both sides of the slash must be accepted."""
+        monkeypatch.setenv("MCP_AUTH_TOKEN", "t0k3n")
+        client = mcp_app.app.test_client()
+        resp = self._post(client, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "unit_convert",
+                       "arguments": {"value": 10, "from_unit": "千克/kg",
+                                     "to_unit": "克/g"}},
+        })
+        text = resp.get_json()["result"]["content"][0]["text"]
+        assert "10000" in text and "换算失败" not in text
+
     def test_missing_token_401(self, mcp_app, monkeypatch):
         monkeypatch.setenv("MCP_AUTH_TOKEN", "t0k3n")
         client = mcp_app.app.test_client()
@@ -336,7 +350,13 @@ class TestToolLoop:
         final_user = chat_stream_spy[0][-1]["content"]
         assert "[工具 unit_convert@campus-tools 第1轮返回的数据]" in final_user
         assert "3000" in final_user
-        assert "返回的数据" in chat_stream_spy[0][0]["content"] or True
+        # The system prompt carries the override note: successful tool data
+        # outranks the "not found in materials" refusal, so an irrelevant
+        # slice can never turn a good tool result into a refusal.
+        system_prompt = chat_stream_spy[0][0]["content"]
+        assert chat_stream_spy[0][0]["role"] == "system"
+        assert "优先级更高" in system_prompt
+        assert "不得回答“资料中未找到相关内容”" in system_prompt
 
         # audit row: ok, attributable, five questions answered
         row = query_one(
@@ -488,6 +508,106 @@ class TestToolLoop:
             "SELECT * FROM mcp_call_logs WHERE conversation_id=%s", (cid,),
         ) is None
         assert events[-1][0] == "done"
+
+    # ---- zero-hit turns: the tool loop must not be gated by retrieval hits --
+
+    def test_zero_hit_with_tool_call_streams_answer(
+        self, flask_app, teacher_a, student_a, connected_server,
+        mcp_client_spy, chat_with_tools_spy, chat_stream_spy,
+    ):
+        """No retrieval hits at all (no uploads): the skill's tool reference
+        still runs the loop and successful tool data grounds the answer."""
+        agent_id = _make_tool_agent(teacher_a)
+        cid = student_a.post("/api/conversations", json={"agent_id": agent_id}) \
+            .get_json()["conversation"]["id"]
+
+        resp = student_a.post(
+            f"/api/conversations/{cid}/messages",
+            json={"content": "10千克等于多少克？"},
+        )
+        assert resp.status_code == 200
+        events = _parse_sse(resp.get_data(as_text=True))
+        kinds = [name for name, _ in events]
+        assert kinds[0] == "meta" and kinds[-1] == "done"
+        meta = events[0][1]
+        assert meta["citations"] == []  # zero slices, tool data only
+        assert meta["tool_calls"][0]["ref"] == "unit_convert@campus-tools"
+        assert meta["tool_calls"][0]["status"] == "ok"
+
+        text = "".join(d["text"] for name, d in events if name == "delta")
+        assert text and text != "资料中未找到相关内容"
+        # the streamed turn carried the tool DATA segment
+        final_user = chat_stream_spy[0][-1]["content"]
+        assert "[工具 unit_convert@campus-tools 第1轮返回的数据]" in final_user
+        assert "3000" in final_user
+
+        rows = query_all(
+            flask_app.config["DB"],
+            "SELECT role, citations FROM messages WHERE conversation_id=%s ORDER BY id",
+            (cid,),
+        )
+        assert [r["role"] for r in rows] == ["user", "assistant"]
+        assert json.loads(rows[1]["citations"]) == []
+
+    def test_zero_hit_tool_error_keeps_fixed_message(
+        self, flask_app, teacher_a, student_a, connected_server,
+        mcp_client_spy, chat_with_tools_spy, chat_stream_spy, monkeypatch,
+    ):
+        """Zero hits and every tool call fails: still the fixed message, the
+        gateway is never called, but the failed attempt is disclosed."""
+        from app.services import mcp_client
+
+        def _explode(*args, **kwargs):
+            raise mcp_client.McpToolError("上游计算服务出错")
+
+        monkeypatch.setattr(mcp_client, "call_tool", _explode)
+        agent_id = _make_tool_agent(teacher_a)
+        cid = student_a.post("/api/conversations", json={"agent_id": agent_id}) \
+            .get_json()["conversation"]["id"]
+
+        resp = student_a.post(
+            f"/api/conversations/{cid}/messages",
+            json={"content": "10千克等于多少克？"},
+        )
+        events = _parse_sse(resp.get_data(as_text=True))
+        meta = events[0][1]
+        assert meta["citations"] == []
+        assert meta["tool_calls"][0]["status"] == "error"
+        text = "".join(d["text"] for name, d in events if name == "delta")
+        assert text == "资料中未找到相关内容"
+        assert events[-1][0] == "done"
+        assert len(chat_with_tools_spy) == 2  # the loop DID run
+        assert len(chat_stream_spy) == 0  # but no grounding -> no model call
+        row = query_one(
+            flask_app.config["DB"],
+            "SELECT status FROM mcp_call_logs WHERE conversation_id=%s", (cid,),
+        )
+        assert row and row["status"] == "error"
+
+    def test_zero_hit_disconnected_server_keeps_fixed_message(
+        self, flask_app, teacher_a, student_a, connected_server,
+        mcp_client_spy, chat_with_tools_spy, chat_stream_spy,
+    ):
+        """Zero hits and the referenced server is disconnected: denied meta,
+        fixed message, the loop never runs."""
+        agent_id = _make_tool_agent(teacher_a)
+        cid = student_a.post("/api/conversations", json={"agent_id": agent_id}) \
+            .get_json()["conversation"]["id"]
+        sid = connected_server["server"]["id"]
+        assert teacher_a.post(f"/api/mcp/servers/{sid}/disconnect").status_code == 200
+
+        resp = student_a.post(
+            f"/api/conversations/{cid}/messages",
+            json={"content": "10千克等于多少克？"},
+        )
+        events = _parse_sse(resp.get_data(as_text=True))
+        meta = events[0][1]
+        assert meta["citations"] == []
+        assert meta["tool_calls"][0]["status"] == "denied"
+        text = "".join(d["text"] for name, d in events if name == "delta")
+        assert text == "资料中未找到相关内容"
+        assert events[-1][0] == "done"
+        assert chat_with_tools_spy == [] and len(chat_stream_spy) == 0
 
 
 def kinds_ok(events) -> bool:

@@ -270,6 +270,19 @@ DASHBOARD_PAGE = """
           <span class="success-msg" id="skillOk"></span>
         </div>
       </div>
+      <div class="cfg-row">
+        <label>技能上传（.md 或 .json，≤64KB；导入后为「启用：否」，确认无误再编辑为「启用：是」）</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <input type="file" id="skillFile" accept=".md,.json" style="flex:1;min-width:180px">
+          <button class="btn secondary" type="button" onclick="importSkillFile()">导入技能</button>
+          <span class="err-msg" id="skillImportErr" style="margin:0"></span>
+          <span class="success-msg" id="skillImportOk"></span>
+        </div>
+        <div style="font-size:12px;color:#8a7a76;margin-top:4px">
+          .md 需以「名称：」开头，字段行后空一行再写引导正文；.json 可用 {"name","description"} 或 {"source"}。
+          普通 README 不是技能文件，会因缺少「名称：」行被拒。
+        </div>
+      </div>
       <hr style="border:none;border-top:1px solid #f0e6e4;margin:16px 0">
       <div class="cfg-row">
         <label>智能体</label>
@@ -357,6 +370,46 @@ DASHBOARD_PAGE = """
         </div>
         <div id="submissionStatus" style="margin-top:8px"></div>
       </div>
+    </div>
+  </div>
+
+  <div class="card" id="auditCard" style="display:none">
+    <div class="card-header">🧾 审计日志（仅教师）</div>
+    <div class="card-body">
+      <div class="cfg-row">
+        <label>本班最近操作（操作类型 / 对象 / 操作者 / 技能 / 用量耗时）</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+          <select id="auditAction" style="flex:1;min-width:150px">
+            <option value="">全部操作</option>
+            <option value="login">登录 login</option>
+            <option value="logout">登出 logout</option>
+            <option value="create">创建 create</option>
+            <option value="update">更新 update</option>
+            <option value="delete">删除 delete</option>
+            <option value="reindex">重建索引 reindex</option>
+            <option value="download">下载 download</option>
+            <option value="submit">提交 submit</option>
+            <option value="grade">批改 grade</option>
+            <option value="explain">讲解 explain</option>
+            <option value="connect">连接 connect</option>
+            <option value="disconnect">断开 disconnect</option>
+          </select>
+          <select id="auditTarget" style="flex:1;min-width:150px">
+            <option value="">全部对象</option>
+            <option value="material">material 材料</option>
+            <option value="skill">skill 技能</option>
+            <option value="agent">agent 智能体</option>
+            <option value="prompt">prompt 提示词</option>
+            <option value="mcp_server">mcp_server 工具服务</option>
+            <option value="assignment">assignment 作业</option>
+            <option value="submission">submission 提交</option>
+            <option value="wrong_question">wrong_question 错题</option>
+            <option value="session">session 会话</option>
+          </select>
+          <button class="btn" type="button" onclick="loadAuditLogs()">刷新</button>
+        </div>
+      </div>
+      <div id="auditLogList"><div class="empty" style="padding:8px 0">加载中...</div></div>
     </div>
   </div>
 </div>
@@ -491,6 +544,16 @@ function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s || '';
   return div.innerHTML;
+}
+
+// 接口统一返回 UTC ISO（带 Z），页面按浏览器本地时区显示。
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).replace('T', ' ');
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' '
+    + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
 
 function formatSize(bytes) {
@@ -897,6 +960,29 @@ async function deleteSkill(id) {
   } catch (e) { /* 401 已跳转 */ }
 }
 
+async function importSkillFile() {
+  const input = document.getElementById('skillFile');
+  const errEl = document.getElementById('skillImportErr');
+  const okEl = document.getElementById('skillImportOk');
+  errEl.textContent = ''; okEl.textContent = '';
+  const file = input.files && input.files[0];
+  if (!file) { errEl.textContent = '请选择 .md 或 .json 文件'; return; }
+  if (file.size > 64 * 1024) { errEl.textContent = '文件超过 64KB'; return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await api('/api/skills/import', {method: 'POST', body: fd});
+    const d = await res.json().catch(() => ({}));
+    if (res.ok) {
+      okEl.textContent = '已导入（停用状态）: ' + (d.skill ? d.skill.name : '');
+      input.value = '';
+      await loadConfig();
+    } else {
+      errEl.textContent = '导入失败: ' + (d.error || res.status);
+    }
+  } catch (e) { errEl.textContent = '导入失败: 网络错误'; }
+}
+
 function loadAgentEditor() {
   const idVal = document.getElementById('agentEditSelect').value;
   document.getElementById('agentErr').textContent = '';
@@ -1073,10 +1159,47 @@ async function loadMcpCallLogs() {
           <span class="tag">用户${c.userId}</span>
           <span class="tag">会话#${c.conversationId}</span>
           <span class="tag">第${c.round}轮</span>
-          <span style="color:#aa9999;font-size:11px">${escapeHtml((c.createdAt || '').replace('T', ' '))}</span>
+          <span style="color:#aa9999;font-size:11px">${escapeHtml(fmtTime(c.createdAt))}</span>
         </div>
         ${c.detail ? `<div style="font-size:12px;color:#7a6a66;margin-top:3px">${escapeHtml(String(c.detail).slice(0, 160))}</div>` : ''}
       </div>`).join('');
+  } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
+}
+
+// ============ 第9课：审计日志（教师） ============
+const AUDIT_LABELS = {
+  create: '创建', update: '更新', delete: '删除', download: '下载',
+  submit: '提交', grade: '批改', explain: '讲解', login: '登录',
+  logout: '登出', connect: '连接', disconnect: '断开', reindex: '重建索引',
+};
+
+async function loadAuditLogs() {
+  const box = document.getElementById('auditLogList');
+  if (!box) return;
+  const action = document.getElementById('auditAction').value;
+  const target = document.getElementById('auditTarget').value;
+  const qs = new URLSearchParams({ limit: '50' });
+  if (action) qs.set('action', action);
+  if (target) qs.set('target_type', target);
+  try {
+    const res = await api('/api/audit-logs?' + qs.toString());
+    const rows = (await res.json()).audit_logs || [];
+    if (!rows.length) { box.innerHTML = '<div class="empty" style="padding:8px 0">暂无审计记录</div>'; return; }
+    box.innerHTML = rows.map(r => {
+      const targetId = r.targetId != null ? '#' + r.targetId : '';
+      const skill = r.skillName ? `<span class="tag">技能 ${escapeHtml(r.skillName)}</span>` : '';
+      const actor = r.actorId == null ? '系统' : '用户' + r.actorId;
+      const detail = r.detail
+        ? `<div style="font-size:12px;color:#7a6a66;margin-top:3px">${escapeHtml(JSON.stringify(r.detail).slice(0, 180))}</div>`
+        : '';
+      return `<div class="skill-item" style="display:block">
+        <div><b>${escapeHtml(AUDIT_LABELS[r.action] || r.action)}</b>
+          ${escapeHtml(r.targetType)}${escapeHtml(targetId)}
+          <span class="tag">${escapeHtml(actor)}</span>
+          ${skill}
+          <span style="color:#aa9999;font-size:11px">${escapeHtml(fmtTime(r.createdAt))}</span>
+        </div>${detail}</div>`;
+    }).join('');
   } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
 }
 
@@ -1098,7 +1221,7 @@ async function loadAssignments() {
         <div class="skill-item" style="display:block">
           <div><b>${escapeHtml(a.title)}</b>
             <span class="tag">作业#${a.id}</span>
-            <span style="color:#aa9999;font-size:11px">${escapeHtml((a.createdAt || '').replace('T', ' '))}</span>
+            <span style="color:#aa9999;font-size:11px">${escapeHtml(fmtTime(a.createdAt))}</span>
           </div>
           <div style="font-size:12px;color:#7a6a66;margin-top:3px">${escapeHtml(a.question).slice(0, 120)}</div>
         </div>`).join('');
@@ -1200,8 +1323,10 @@ async function init() {
       document.getElementById('uploadArea').style.display = 'block';
       document.getElementById('configCard').style.display = 'block';
       document.getElementById('mcpCard').style.display = 'block';
+      document.getElementById('auditCard').style.display = 'block';
       await loadConfig();
       await loadMcp();
+      await loadAuditLogs();
     }
 
     document.getElementById('gradingTeacherForm').style.display = user.role === 'teacher' ? 'block' : 'none';

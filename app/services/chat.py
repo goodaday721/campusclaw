@@ -4,8 +4,11 @@ Flow per user message: build the system prompt (agent prompt, falling back to
 the class prompt, plus injected enabled skill descriptions and the shared
 grounding rules) -> hybrid-retrieve this class's knowledge (optionally
 restricted to the agent's bound materials) -> with hits, stream the answer
-from the chat gateway; with zero hits, answer the fixed "not found" message
-without calling the model. Both turns are persisted AFTER the answer
+from the chat gateway; with zero hits and no MCP tool references, answer the
+fixed "not found" message without calling the model. Zero hits WITH tool
+references still run the tool loop first: successful tool data counts as
+grounding and unlocks a streaming answer, otherwise the fixed message stays.
+Both turns are persisted AFTER the answer
 completes; a mid-stream gateway failure leaves nothing in the database.
 
 Lesson 6 adds the MCP tool loop: when the turn's skills reference MCP tools
@@ -46,6 +49,22 @@ HISTORY_TURNS = 6  # server-side recent turns injected into the prompt
 EXCERPT_LIMIT = 2000  # grounding slices carry real text, not display excerpts
 TOOL_TEXT_SUMMARY = 120  # meta.tool_calls text summary length
 
+# Lesson 11 拓展：关怀式对话。该技能只在学生表达挫败/焦虑时注入，避免
+# 每次回答都被关怀话术污染；命中后即使检索零命中也会调用模型（否则会被
+# 「资料中未找到」的固定文案吞掉，正好在最需要安抚时最冷漠）。
+CARE_SKILL_NAME = "关怀式对话"
+CARE_PATTERNS = (
+    "不会", "听不懂", "看不懂", "学不会", "太难", "好难", "崩溃", "焦虑",
+    "不想学", "想放弃", "放弃", "压力", "害怕", "没信心", "学不下去",
+)
+
+
+def needs_care(text: str) -> bool:
+    """True when the student's message signals frustration or anxiety."""
+    if not text:
+        return False
+    return any(p in text for p in CARE_PATTERNS)
+
 
 def _prepare(
     db: dict,
@@ -72,6 +91,10 @@ def _prepare(
         )
     finally:
         conn.close()
+
+    # 关怀式对话只在命中挫败/焦虑信号时注入；其余技能始终注入。
+    care = needs_care(content)
+    skills = [s for s in skills if s["name"] != CARE_SKILL_NAME or care]
 
     parts = [system_prompt] if system_prompt.strip() else []
     for skill in skills:
@@ -116,6 +139,7 @@ def _prepare(
         "citations": citations,
         "skill_name": ("、".join(s["name"] for s in skills) if skills else None),
         "no_match": not hits,
+        "care": care,
         "skill_refs": [
             t for s in skills for t in (s.get("tools") or [])
             if mcp_service.parse_reference(t) is not None
@@ -233,9 +257,12 @@ def _data_segment(meta: dict) -> str:
 
 
 TOOL_DATA_NOTE = (
-    "用户消息中以「[工具 … 返回的数据]」标注的内容是外部工具的返回结果，"
-    "与资料切片一样是可靠依据，可引用其内容；标注为「调用失败」的部分表示"
-    "该数据本次不可用，不要编造。"
+    "本轮对话已经执行过外部工具：用户消息中以「[工具 … 返回的数据]」标注的内容"
+    "是工具的返回结果，与资料切片同为可靠依据，且优先级更高。只要工具数据已包含"
+    "回答问题所需的信息，就必须直接依据它作答（例如给出换算数值与进率），"
+    f"不得回答“{NO_MATCH_MESSAGE}”，也不要因为资料切片与本问题无关而拒答。"
+    "标注为「调用失败」的部分表示该数据本次不可用，不要编造。"
+    "回答里不要复述「[工具 … 返回的数据]」这类标注字样。"
 )
 
 
@@ -295,7 +322,10 @@ def start(
     starts, so the route can still answer with a normal JSON error.
     """
     prepared = _prepare(db, qcfg, config, class_id, agent, conversation_id, content)
-    if prepared["no_match"]:
+    # Zero hits short-circuit ONLY when the turn's skills reference no MCP
+    # tools: otherwise the tool loop still runs and successful tool data can
+    # ground the answer even without any retrieval slice.
+    if prepared["no_match"] and not prepared["skill_refs"] and not prepared["care"]:
         return {"prepared": prepared, "gen": None, "first_delta": None,
                 "tool_calls_meta": []}
 
@@ -348,6 +378,16 @@ def start(
             # segments count as reliable grounding like the slices do.
             messages[0]["content"] += "\n" + TOOL_DATA_NOTE
 
+    # Zero hits with no successful tool data: no evidence at all (neither
+    # slices nor tool results) -> fixed message, gateway untouched. Failed
+    # attempts still ride home in tool_calls_meta so the SSE meta discloses
+    # them ahead of the fixed text. A care turn is exempt: at that moment a
+    # comforting reply beats a clinically correct "not found".
+    if (prepared["no_match"] and not prepared["care"]
+            and not any(m["status"] == "ok" for m in tool_calls_meta)):
+        return {"prepared": prepared, "gen": None, "first_delta": None,
+                "tool_calls_meta": tool_calls_meta}
+
     try:
         gen = model_gateway.chat_stream(config, messages)
         first_delta = next(gen, None)
@@ -365,9 +405,11 @@ def sse_event(name: str, data: dict) -> str:
 def sse_stream(result: dict, db: dict, conversation_id: int, content: str):
     """Turn the primed stream into SSE frames: meta -> delta* -> done.
 
-    Zero-hit answers reuse the fixed message and never touch the gateway.
-    A mid-stream gateway failure yields no `done` frame (the client shows an
-    interrupted answer) and persists nothing.
+    A primed stream of None (zero hits with no grounding left after the tool
+    loop) reuses the fixed message and never touches the gateway; any failed
+    tool attempts were already disclosed in the meta event. A mid-stream
+    gateway failure yields no `done` frame (the client shows an interrupted
+    answer) and persists nothing.
     """
     prepared = result["prepared"]
     meta_payload = {"status": "ok", "citations": prepared["citations"]}
@@ -377,7 +419,7 @@ def sse_stream(result: dict, db: dict, conversation_id: int, content: str):
         meta_payload["tool_calls"] = result["tool_calls_meta"]
     yield sse_event("meta", meta_payload)
 
-    if prepared["no_match"]:
+    if result["gen"] is None:
         answer_text = NO_MATCH_MESSAGE
         yield sse_event("delta", {"text": answer_text})
         message_id = _persist(db, conversation_id, content, answer_text, [], None)

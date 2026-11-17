@@ -30,7 +30,9 @@ def parse(source: str) -> dict:
     Raises SkillSourceError when `名称` or the description is missing/empty.
     """
     if not isinstance(source, str) or not source.strip():
-        raise SkillSourceError("source must not be empty")
+        raise SkillSourceError(
+            "技能内容不能为空：第一行写「名称：xxx」，空一行后写引导正文"
+        )
 
     fields: dict = {
         "name": "",
@@ -56,7 +58,9 @@ def parse(source: str) -> dict:
 
     description = "\n".join(body_lines).strip()
     if not description:
-        raise SkillSourceError("source must contain guidance text after a blank line")
+        raise SkillSourceError(
+            "缺少引导正文：字段行之后要空一行，再写注入系统提示词的指令"
+        )
     fields["description"] = description
 
     seen_name = False
@@ -82,8 +86,10 @@ def parse(source: str) -> dict:
             elif value in ("否", "false", "False", "0"):
                 fields["enabled"] = False
             else:
-                raise SkillSourceError("启用 must be 是 or 否")
+                raise SkillSourceError("「启用」只能填 是 或 否")
 
     if not seen_name or not fields["name"]:
-        raise SkillSourceError("source must contain a 名称： line")
+        raise SkillSourceError(
+            "缺少「名称：」行：文件第一行需写成「名称：你的技能名」"
+        )
     return fields

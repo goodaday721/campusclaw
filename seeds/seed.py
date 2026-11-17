@@ -26,6 +26,8 @@ MIGRATIONS = [
     "004_assistant.sql",
     "005_mcp.sql",
     "006_grading.sql",
+    "007_wrong_questions.sql",
+    "008_audit_logs.sql",
 ]
 
 # Lesson 5 seeds: one class prompt + one guided skill + one enabled agent per
@@ -69,6 +71,48 @@ SEED_SKILL = {
 }
 
 SEED_AGENT_NAME = "解题助手"
+
+# Lesson 11 拓展：关怀式对话。只在学生表达挫败/焦虑时由 chat 管线注入
+# （见 app.services.chat.needs_care），与错题讲解并列绑定到默认助手。
+SEED_CARE_SKILL = {
+    "source": (
+        "名称：关怀式对话\n"
+        "适用条件：学生表达挫败、焦虑、想放弃等情绪\n"
+        "资料：数学\n"
+        "启用：是\n"
+        "\n"
+        "你是“关怀式对话”技能。当学生流露出挫败或焦虑时，你必须：\n"
+        "1. 先用一句话承认他的感受，不做评判，也不急着讲题；\n"
+        "2. 具体指出他已经做对的部分，或指出这道题本身确实容易卡住的地方；\n"
+        "3. 把目标缩小成一个 5 分钟内能完成的小步骤，邀请他先试这一步；\n"
+        "4. 语气温和、句子短，不使用“你应该”“这么简单”等否定式表达；\n"
+        "5. 学生情绪缓和后，再回到正常解题引导。"
+    ),
+}
+
+# Lesson 11 必做: 错题讲解技能。绑定到本班默认解题助手，由
+# `POST /api/wrong-questions/<id>/explain` 触发的对话激活。
+SEED_WRONG_QUESTION_SKILL = {
+    "name": "错题讲解",
+    "trigger": "已判错的题、错题本、错题讲解",
+    "tools": ["knowledge_search"],
+    "subject": "数学",
+    "source": (
+        "名称：错题讲解\n"
+        "适用条件：学生请求讲解一道已判错的题\n"
+        "工具：knowledge_search\n"
+        "资料：数学\n"
+        "启用：是\n"
+        "\n"
+        "你是“错题讲解”技能。面对一道判错的题，你必须：\n"
+        "1. 先诊断错因类型：概念不清 / 计算失误 / 审题偏差 / 思路方向错误，"
+        "用一句话点明；\n"
+        "2. 指出学生答案里**具体哪一步**开始偏离；\n"
+        "3. 用提问方式引导学生自己发现正确路径，每次只问一个引导问题；\n"
+        "4. 学生给出新思路后再确认或继续引导；\n"
+        "5. 全程不直接给最终答案；学生推出正确答案后再让其对照参考答案验证。"
+    ),
+}
 
 # Lesson 6 seed: pre-register one MCP tool server per class (disconnected).
 # The token comes from the MCP_AUTH_TOKEN env var (same value the mcp-demo
@@ -192,6 +236,53 @@ def _seed_assistant(conn: pymysql.connections.Connection) -> None:
                 cur.execute(
                     "INSERT INTO agent_skills (agent_id, skill_id) VALUES (%s, %s)",
                     (agent_id, skill_id),
+                )
+    conn.commit()
+    _seed_extra_skill(conn, SEED_WRONG_QUESTION_SKILL)
+    _seed_extra_skill(conn, SEED_CARE_SKILL)
+
+
+def _seed_extra_skill(conn: pymysql.connections.Connection, spec: dict) -> None:
+    """Register one extra built-in skill on both classes and bind the default agent."""
+    import json
+
+    from app.services.skill_source import parse
+
+    fields = parse(spec["source"])
+    tools_json = json.dumps(fields.get("tools") or [], ensure_ascii=False)
+    with conn.cursor() as cur:
+        for class_id in SEED_CLASS_PROMPTS:
+            cur.execute(
+                "SELECT id FROM skills WHERE class_id = %s AND name = %s",
+                (class_id, fields["name"]),
+            )
+            if cur.fetchone() is not None:
+                continue
+            cur.execute(
+                "INSERT INTO skills (class_id, name, `trigger`, tools, subject, "
+                "description, source, enabled) VALUES (%s, %s, %s, %s, %s, %s, %s, 1)",
+                (
+                    class_id,
+                    fields["name"],
+                    fields.get("trigger", ""),
+                    tools_json,
+                    fields.get("subject", ""),
+                    fields["description"],
+                    spec["source"],
+                ),
+            )
+            skill_id = cur.lastrowid
+            # Bind to the default enabled agent (created above by _seed_assistant).
+            cur.execute(
+                "SELECT id FROM agents WHERE class_id = %s AND name = %s AND enabled = 1 "
+                "ORDER BY id LIMIT 1",
+                (class_id, SEED_AGENT_NAME),
+            )
+            agent_row = cur.fetchone()
+            if agent_row is not None:
+                cur.execute(
+                    "INSERT IGNORE INTO agent_skills (agent_id, skill_id) VALUES (%s, %s)",
+                    (agent_row["id"], skill_id),
                 )
     conn.commit()
 

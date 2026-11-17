@@ -7,6 +7,7 @@ from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.middleware.role import role_required
 from app.repositories.materials import MaterialsRepository
+from app.services import audit
 from app.services.upload import UploadValidationError, save_upload
 
 materials_bp = Blueprint("materials", __name__)
@@ -55,6 +56,17 @@ def upload_material():
     except Exception:
         current_app.logger.exception("post-upload indexing failed")
 
+    # SEC-07: audit the upload (file + knowledge rows already committed).
+    audit.record(
+        current_app.config["DB"],
+        class_id=g.current_user["classId"],
+        actor_id=g.current_user["userId"],
+        action="create",
+        target_type="material",
+        target_id=int(record["id"]),
+        detail={"filename": record.get("filename"), "size": record.get("size")},
+    )
+
     return jsonify(record), 201
 
 
@@ -100,6 +112,16 @@ def reindex_material(material_id: int):
     except Exception:
         current_app.logger.exception("reindex failed")
         return jsonify({"error": "reindex failed"}), 500
+
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=g.current_user["userId"],
+        action="reindex",
+        target_type="material",
+        target_id=material_id,
+        detail={"strategy": strategy},
+    )
 
     return jsonify(summary), 200
 
@@ -153,6 +175,16 @@ def download_material(material_id: int):
     file_path = (Path(current_app.config["UPLOAD_ROOT"]) / material["storage_key"]).resolve()
     if not file_path.is_file():
         return jsonify({"error": "not found"}), 404
+
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=g.current_user["userId"],
+        action="download",
+        target_type="material",
+        target_id=material_id,
+        detail={"filename": material["filename"]},
+    )
 
     return send_file(
         file_path,

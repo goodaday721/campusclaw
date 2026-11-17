@@ -74,7 +74,7 @@
 ## 6. 部署交付
 
 - 交付物是 compose 加 `.env.example`；首次启动自动迁移、种子、切片回填，无需手工初始化。
-  检查：`docker compose up --build -d` 后 `docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" campusclaw -e "SHOW TABLES"'` 列出全部 19 张表，且 `SELECT COUNT(*) FROM users` 为 4。
+  检查：`docker compose up --build -d` 后 `docker compose exec -T db sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" campusclaw -e "SHOW TABLES"'` 列出全部 21 张表，且 `SELECT COUNT(*) FROM users` 为 4。
 - `/health` 只报存活（恒 200，不探依赖）；`/health/ready` 探 db 与 qdrant，任一不可用返回 503。
   检查：`curl http://localhost:8080/health`、`curl -i http://localhost:8080/health/ready`、`tests/test_health_ready.py`。
 - 数据落在 named volume `mysql_data`、`qdrant_data` 与宿主机 `./uploads`；`down -v` 只用于主动重置。
@@ -102,7 +102,7 @@
 ## 8. 文档与变更流程
 
 - 行为变更先落 openspec change（proposal / design / tasks / specs），再动代码；完成后归档到 `openspec/changes/archive/<日期>-<变更名>/`，能力变更合并回 `openspec/specs/`。
-  检查：`openspec list` 输出 `No active changes found.`；`openspec list --specs` 列出 13 个能力 spec。
+  检查：`openspec list` 输出 `No active changes found.`；`openspec list --specs` 列出 17 个能力 spec。
 - README 必须同步能力、启动命令与验证路径；新增页面或接口要写进验证路径。
   检查：`git diff --stat README.md`；`grep -n "验证" README.md`。
 - `docs/standards/` 的明细与代码同批更新，不允许只改代码不改规范。

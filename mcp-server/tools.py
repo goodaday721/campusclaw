@@ -121,17 +121,34 @@ def formula_hint(query):
 
 
 def unit_convert(value, from_unit, to_unit):
-    """Convert between common length/weight units; returns explanatory text."""
+    """Convert between common length/weight units; returns explanatory text.
+
+    Units accept bare forms (千克, kg) and "中文/英文" compound forms
+    (千克/kg) either side of the slash — models tend to copy the schema
+    example's "千米/km" format verbatim, so strict bare-unit matching
+    turns every such call into a spurious failure.
+    """
     try:
         num = float(value)
     except (TypeError, ValueError):
         return "换算失败：value 必须是数字。"
-    src = str(from_unit or "").strip().lower()
-    dst = str(to_unit or "").strip().lower()
-    if src in _LENGTH and dst in _LENGTH:
-        table, kind = _LENGTH, "长度"
-    elif src in _WEIGHT and dst in _WEIGHT:
-        table, kind = _WEIGHT, "重量"
+
+    def _match(raw, table):
+        text = str(raw or "").strip().lower()
+        if text in table:
+            return text
+        for part in text.split("/"):
+            part = part.strip()
+            if part in table:
+                return part
+        return None
+
+    src_l, dst_l = _match(from_unit, _LENGTH), _match(to_unit, _LENGTH)
+    src_w, dst_w = _match(from_unit, _WEIGHT), _match(to_unit, _WEIGHT)
+    if src_l and dst_l:
+        table, src, dst, kind = _LENGTH, src_l, dst_l, "长度"
+    elif src_w and dst_w:
+        table, src, dst, kind = _WEIGHT, src_w, dst_w, "重量"
     else:
         return (
             f"换算失败：暂不支持“{from_unit}”到“{to_unit}”。"

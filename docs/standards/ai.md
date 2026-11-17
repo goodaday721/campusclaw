@@ -35,10 +35,25 @@
 - 系统提示词的固定问答规则写在代码常量（`answer.GROUNDING_RULES`），改动即为行为变更，必须带用例。
   检查：`tests/test_retrieval.py::TestAsk::test_grounded_answer_with_citations`。
 
+## 内置技能清单
+
+- 四个并列技能均通过 `agent_skills` 与默认助手多对多绑定，seed 时全部 enabled=1：
+  - **方程解题引导**（`seeds/seed.py::SEED_SKILL`）：数学学科，引导式回答，不给最终答案。
+  - **作业批改**：由 worker 内部使用（`app/services/grading.py`），不是对话技能。
+  - **错题讲解**（`seeds/seed.py::SEED_WRONG_QUESTION_SKILL`）：诊断错因（概念不清/计算失误/审题偏差/思路方向错误）→ 指出偏离步骤 → 分步提问引导，全程不直接给最终答案。由 `POST /api/wrong-questions/<id>/explain` 触发。
+  - **关怀式对话**（`seeds/seed.py::SEED_CARE_SKILL`）：仅当学生消息命中挫败/焦虑词表（`app/services/chat.py::CARE_PATTERNS`）时注入，先共情再把目标缩小成一步；普通提问不注入。关怀轮次即使零命中也不走固定文案，仍调用模型作答。
+- 新增/修改技能必须走 openspec change，且同步更新 seed + 测试。
+  检查：`tests/test_wrong_questions.py::TestWrongQuestionSkillSeeded::test_skill_registered_and_bound`；`tests/test_care_skill.py::TestCareSkillSeeded::test_seeded_and_bound_in_both_classes`。
+
+## 技能上传
+
+- `POST /api/skills/import` 仅教师可用，接受 `.md` / `.json`，上限 64KB；工具引用复用四查，导入后一律 `enabled=0`，source 规整为单段文本（`启用：否`），教师确认后再编辑启用。
+  检查：`tests/test_skill_import.py`（正常 md/json、415/413/400/409/403/401、停用→启用、跨班同名独立、审计字段）。
+
 ## 输出校验与不编造依据
 
-- 0 命中返回固定文案「资料中未找到相关内容」+ 空 `citations`，且不调用模型。
-  检查：`tests/test_retrieval.py::TestAsk::test_no_evidence_does_not_call_chat`、`tests/test_retrieval.py::TestKeywordSearch::test_no_match_returns_fixed_message`。
+- 0 命中返回固定文案「资料中未找到相关内容」+ 空 `citations`，且不调用模型。例外：解题助手（`/api/conversations/<id>/messages`）本轮技能引用了 MCP 工具时仍先跑工具循环，至少一次调用 ok 才基于工具数据调模型流式回答（citations 仍为空）；全部失败/被拒仍回固定文案且不调模型。`/ask` 无此例外。
+  检查：`tests/test_retrieval.py::TestAsk::test_no_evidence_does_not_call_chat`、`tests/test_mcp.py::TestToolLoop::test_zero_hit_with_tool_call_streams_answer`、`tests/test_mcp.py::TestToolLoop::test_zero_hit_tool_error_keeps_fixed_message`。
 - 有命中时 `citations` 顺序必须与 `[n]` 编号一致，从 1 起递增；出处必须指向本班切片。
   检查：`tests/test_retrieval.py::TestAsk::test_grounded_answer_with_citations`、`tests/test_assistant.py::TestConversationsAPI::test_agent_material_filter`。
 - 问答取切片正文用 `excerpt_limit=2000`（不是检索展示的 200），保证依据完整。

@@ -19,6 +19,8 @@ import pymysql
 from app.config import Config, ConfigError
 from app.db.connection import get_connection
 from app.repositories import grading as repo
+from app.repositories import wrong_questions as wrong_questions_repo
+from app.services import audit as audit_service
 from app.services import grading as grading_service
 
 DB_WAIT_SECONDS = 120
@@ -87,11 +89,34 @@ def _fail(db: dict, job: dict, submission_id: int | None, reason: str) -> None:
     )
 
 
-def _succeed(db: dict, job: dict, submission_id: int, score, feedback) -> None:
+def _succeed(db: dict, job: dict, submission_id: int, score, feedback,
+             elapsed_ms: float | None = None) -> None:
     conn = get_connection(db)
+    wrong_question_id = None
     try:
         repo.finish_submission(conn, submission_id, score, feedback, "succeeded")
+        # 判错（score < 60）时同事务写入错题；UNIQUE(submission_id) 让重放幂等。
+        if score is not None and score < 60:
+            wrong_question_id = wrong_questions_repo.upsert_from_submission(
+                conn, submission_id, job["class_id"]
+            )
         repo.finish_job(conn, job["id"], "succeeded")
+        # SEC-07: the grade row shares the result transaction (skill + usage).
+        audit_service.insert_commit(
+            conn,
+            class_id=job["class_id"],
+            actor_id=None,
+            action="grade",
+            target_type="submission",
+            target_id=submission_id,
+            skill_name="作业批改",
+            detail={
+                "jobId": job["id"],
+                "score": score,
+                "ms": elapsed_ms,
+                "wrongQuestionId": wrong_question_id,
+            },
+        )
         conn.commit()
     finally:
         conn.close()
@@ -100,6 +125,8 @@ def _succeed(db: dict, job: dict, submission_id: int, score, feedback) -> None:
         jobId=job["id"],
         submissionId=submission_id,
         score=score,
+        wrongQuestionId=wrong_question_id,
+        ms=elapsed_ms,
     )
 
 
@@ -137,12 +164,14 @@ def run_once(db: dict, config: Config) -> bool:
         return True
 
     try:
+        started = time.perf_counter()
         score, feedback = grading_service.grade(
             config,
             assignment["question"],
             assignment["reference_answer"],
             submission["answer"],
         )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     except grading_service.GradingFailed as exc:
         _fail(db, job, submission_id, str(exc))
         return True
@@ -150,7 +179,7 @@ def run_once(db: dict, config: Config) -> bool:
         _fail(db, job, submission_id, f"批改调用失败：{type(exc).__name__}")
         return True
 
-    _succeed(db, job, submission_id, score, feedback)
+    _succeed(db, job, submission_id, score, feedback, elapsed_ms=elapsed_ms)
     return True
 
 

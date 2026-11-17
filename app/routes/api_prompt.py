@@ -10,6 +10,7 @@ from app.db.connection import get_connection
 from app.middleware.auth import auth_required
 from app.middleware.role import role_required
 from app.repositories import prompts as prompts_repo
+from app.services import audit
 
 prompt_bp = Blueprint("api_prompt", __name__)
 
@@ -42,4 +43,12 @@ def put_prompt():
         conn.commit()
     finally:
         conn.close()
+    audit.record(
+        current_app.config["DB"],
+        class_id=class_id,
+        actor_id=g.current_user["userId"],
+        action="update",
+        target_type="prompt",
+        detail={"chars": len(text.strip())},
+    )
     return jsonify({"classId": class_id, "body": text.strip()}), 200

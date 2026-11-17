@@ -289,6 +289,40 @@ _OPENAPI = {
                 },
             },
         },
+        "/api/skills/import": {
+            "post": {
+                "tags": ["assistant"],
+                "summary": "上传技能文件（仅教师；.md 或 .json，≤64KB，导入后为停用状态）",
+                "security": [{"bearerAuth": []}],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "string",
+                                        "format": "binary",
+                                        "description": "技能 source 文本(.md) 或技能包(.json)",
+                                    }
+                                },
+                                "required": ["file"],
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "201": _json(_ref("SkillResponse")),
+                    "400": _err("缺少文件 / 非 UTF-8 / 解析失败 / 工具引用未登记"),
+                    "401": _err("未登录"),
+                    "403": _err("仅教师可导入"),
+                    "409": _err("本班已存在同名技能"),
+                    "413": _err("文件超过 64KB"),
+                    "415": _err("扩展名不是 .md / .json"),
+                },
+            }
+        },
         "/api/skills/{id}": {
             "put": {
                 "tags": ["assistant"],
@@ -638,6 +672,83 @@ _OPENAPI = {
                 },
             }
         },
+        "/api/wrong-questions": {
+            "get": {
+                "tags": ["wrong-questions"],
+                "summary": "错题列表：学生只看自己的，教师看本班全部",
+                "security": [{"bearerAuth": []}],
+                "responses": {
+                    "200": _json(_ref("WrongQuestionListResponse")),
+                    "401": _err("未登录"),
+                },
+            }
+        },
+        "/api/wrong-questions/{id}": {
+            "get": {
+                "tags": ["wrong-questions"],
+                "summary": "错题详情；跨班、跨他人与不存在均为同构 404",
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("错题 id")],
+                "responses": {
+                    "200": _json(_ref("WrongQuestion")),
+                    "401": _err("未登录"),
+                    "404": _err("不存在、跨班或非本人错题"),
+                },
+            }
+        },
+        "/api/wrong-questions/{id}/explain": {
+            "post": {
+                "tags": ["wrong-questions"],
+                "summary": (
+                    "错题讲解：创建会话并返回 SSE 流（meta → delta* → done），"
+                    "由「错题讲解」技能驱动"
+                ),
+                "security": [{"bearerAuth": []}],
+                "parameters": [_path_id("错题 id")],
+                "responses": {
+                    "200": {
+                        "description": "text/event-stream：meta → delta* → done",
+                        "content": {"text/event-stream": {"schema": {"type": "string"}}},
+                    },
+                    "401": _err("未登录"),
+                    "404": _err("不存在、跨班或非本人错题"),
+                    "503": _err("模型网关不可用"),
+                },
+            }
+        },
+        "/api/audit-logs": {
+            "get": {
+                "tags": ["audit"],
+                "summary": "审计日志（教师专用，按班级隔离）",
+                "security": [{"bearerAuth": []}],
+                "parameters": [
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "schema": {"type": "integer", "default": 50, "maximum": 200},
+                        "description": "返回条数上限",
+                    },
+                    {
+                        "name": "action",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "按操作类型过滤，如 create/submit/grade/explain",
+                    },
+                    {
+                        "name": "target_type",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "按对象类型过滤，如 material/submission/wrong_question",
+                    },
+                ],
+                "responses": {
+                    "200": _json(_ref("AuditLogListResponse")),
+                    "400": _err("未知 action / target_type"),
+                    "401": _err("未登录"),
+                    "403": _err("非教师角色"),
+                },
+            }
+        },
     },
     "components": {
         "securitySchemes": {
@@ -653,6 +764,51 @@ _OPENAPI = {
                 "type": "object",
                 "properties": {"error": {"type": "string", "example": "not found"}},
                 "required": ["error"],
+            },
+            "WrongQuestion": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "classId": {"type": "integer"},
+                    "submissionId": {"type": "integer"},
+                    "studentId": {"type": "integer"},
+                    "question": {"type": "string"},
+                    "studentAnswer": {"type": "string"},
+                    "referenceAnswer": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "createdAt": {"type": "string", "nullable": True},
+                },
+            },
+            "WrongQuestionListResponse": {
+                "type": "object",
+                "properties": {
+                    "wrong_questions": {
+                        "type": "array",
+                        "items": _ref("WrongQuestion"),
+                    }
+                },
+                "required": ["wrong_questions"],
+            },
+            "AuditLog": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "classId": {"type": "integer"},
+                    "actorId": {"type": "integer", "nullable": True},
+                    "action": {"type": "string", "example": "grade"},
+                    "targetType": {"type": "string", "example": "submission"},
+                    "targetId": {"type": "integer", "nullable": True},
+                    "skillName": {"type": "string", "nullable": True},
+                    "detail": {"type": "object", "nullable": True},
+                    "createdAt": {"type": "string"},
+                },
+            },
+            "AuditLogListResponse": {
+                "type": "object",
+                "properties": {
+                    "audit_logs": {"type": "array", "items": _ref("AuditLog")}
+                },
+                "required": ["audit_logs"],
             },
             "LoginRequest": {
                 "type": "object",

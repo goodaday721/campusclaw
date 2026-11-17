@@ -35,6 +35,15 @@
 - 服务端返回给浏览器的错误只给短语，网关原始响应与堆栈不外泄。
   检查：`grep -rn "\"detail\"" app/routes` 除 OpenAPI schema 与审计字段外只出现在 `search.py`、`ask.py`、`api_conversations.py` 的 503 分支。
 
+## 审计日志（SEC-07）
+
+- 每个受审计操作必须落一行 `audit_logs`，七列齐全：`action`（操作类型）、`target_type`（对象）、`target_id`、`actor_id`、`class_id`、`skill_name`（技能标识）、`detail`（用量与耗时等 JSON）。
+  检查：`tests/test_audit.py::TestAuditWrites`（登录/上传/作业/提交/批改/讲解写入）；`SELECT action, target_type, target_id, actor_id, class_id, skill_name, detail FROM audit_logs LIMIT 5`。
+- 批改审计必须与批改结果同事务写入；其余操作用 best-effort，审计故障只输出 `audit_write_failed` 且不得影响业务响应。
+  检查：`app/worker.py::_succeed` 内 `insert_commit`；`app/services/audit.py::record`。
+- 审计查询只经 `GET /api/audit-logs`，教师专属并强制 `class_id` 过滤；`action` / `target_type` 只接受白名单值，未知值 400。
+  检查：`tests/test_audit.py::TestAuditAPI`（教师可读、学生 403、未登录 401、跨班隔离、过滤与 400）。
+
 ## 附件与文件读取
 
 - 下载先做业务授权查询（`find_by_id_scoped_to_class`），再按 `storage_key` 解析物理路径；查询为空或文件缺失都返回同构 404。

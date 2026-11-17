@@ -17,6 +17,8 @@ MIGRATIONS = [
     "004_assistant.sql",
     "005_mcp.sql",
     "006_grading.sql",
+    "007_wrong_questions.sql",
+    "008_audit_logs.sql",
 ]
 
 # DB readiness retry: depends_on only orders container start, it does NOT wait
@@ -66,6 +68,8 @@ def create_app(config: Config | None = None) -> Flask:
     from app.routes.api_conversations import conversations_bp
     from app.routes.api_mcp import mcp_bp
     from app.routes.api_grading import grading_bp
+    from app.routes.api_wrong_questions import wrong_questions_bp
+    from app.routes.api_audit import audit_bp
     from app.routes.api_docs import docs_bp
 
     app.register_blueprint(health_bp)
@@ -80,6 +84,8 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(conversations_bp)
     app.register_blueprint(mcp_bp)
     app.register_blueprint(grading_bp)
+    app.register_blueprint(wrong_questions_bp)
+    app.register_blueprint(audit_bp)
     app.register_blueprint(docs_bp)
 
     return app

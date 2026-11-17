@@ -52,6 +52,8 @@ MIGRATIONS = [
     "004_assistant.sql",
     "005_mcp.sql",
     "006_grading.sql",
+    "007_wrong_questions.sql",
+    "008_audit_logs.sql",
 ]
 
 # Deterministic offline fake for the embedding gateway: normalized bag of
