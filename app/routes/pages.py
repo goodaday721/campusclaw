@@ -373,6 +373,24 @@ DASHBOARD_PAGE = """
     </div>
   </div>
 
+  <div class="card" id="wrongCard" style="display:none">
+    <div class="card-header">📕 错题本与错题讲解（第 11 课）</div>
+    <div class="card-body">
+      <div class="cfg-row">
+        <label>本班错题（学生只看自己的，低于 60 分自动生成）</label>
+        <div id="wrongList"><div class="empty" style="padding:8px 0">加载中...</div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <button class="btn btn-ghost" type="button" onclick="loadWrongQuestions()">刷新</button>
+        <span class="err-msg" id="wrongErr" style="margin:0"></span>
+      </div>
+      <div id="wrongExplainBox" style="display:none;margin-top:12px">
+        <label>错题讲解（先诊断错因，再分步引导，不直接给答案）</label>
+        <div id="wrongExplainOut" style="max-height:260px;overflow:auto;background:#fff;border-radius:10px;padding:12px;font-size:13px;line-height:1.7;white-space:pre-wrap"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="card" id="auditCard" style="display:none">
     <div class="card-header">🧾 审计日志（仅教师）</div>
     <div class="card-body">
@@ -1203,6 +1221,82 @@ async function loadAuditLogs() {
   } catch (e) { box.innerHTML = '<div class="empty">加载失败</div>'; }
 }
 
+// ============ 第11课：错题本与错题讲解 ============
+async function loadWrongQuestions() {
+  const box = document.getElementById('wrongList');
+  const err = document.getElementById('wrongErr');
+  if (!box) return;
+  err.textContent = '';
+  try {
+    const res = await api('/api/wrong-questions');
+    if (!res.ok) { box.innerHTML = '<div class="empty" style="padding:8px 0">加载失败</div>'; return; }
+    const rows = (await res.json()).wrong_questions || [];
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty" style="padding:8px 0">暂无错题：低于 60 分的提交由 worker 自动生成</div>';
+      return;
+    }
+    box.innerHTML = rows.map(w => `
+      <div class="skill-item" style="display:block">
+        <div><b>${escapeHtml((w.question || '').slice(0, 120))}</b>
+          <span class="tag">错题#${w.id}</span>
+          <span style="color:#aa9999;font-size:11px">${escapeHtml(fmtTime(w.createdAt))}</span>
+        </div>
+        <div style="font-size:12px;color:#7a6a66;margin-top:3px">你的答案：${escapeHtml((w.studentAnswer || '（空）').slice(0, 80))}</div>
+        ${w.reason ? `<div style="font-size:12px;color:#7a6a66;margin-top:2px">批改意见：${escapeHtml(w.reason).slice(0, 120)}</div>` : ''}
+        <button class="btn btn-ghost" type="button" style="margin-top:6px" onclick="explainWrongQuestion(${w.id})">讲解这道题</button>
+      </div>`).join('');
+  } catch (e) {
+    box.innerHTML = '<div class="empty" style="padding:8px 0">加载失败</div>';
+  }
+}
+
+async function explainWrongQuestion(wqId) {
+  const box = document.getElementById('wrongExplainBox');
+  const out = document.getElementById('wrongExplainOut');
+  const err = document.getElementById('wrongErr');
+  err.textContent = '';
+  box.style.display = 'block';
+  out.textContent = '正在讲解...';
+  try {
+    const res = await api('/api/wrong-questions/' + wqId + '/explain', {method: 'POST'});
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      out.textContent = '讲解失败: ' + (d.error || res.status);
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let text = '';
+    const handleFrame = (frame) => {
+      const lines = frame.split('\\n');
+      const evLine = lines.find(l => l.startsWith('event:'));
+      const dataLine = lines.find(l => l.startsWith('data:'));
+      if (!dataLine) return;
+      let payload;
+      try { payload = JSON.parse(dataLine.slice(5).trim()); } catch (e) { return; }
+      const ev = evLine ? evLine.slice(6).trim() : '';
+      if (ev === 'delta') {
+        text += payload.text || '';
+        out.textContent = text;
+        out.scrollTop = out.scrollHeight;
+      }
+    };
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const frames = buf.split('\\n\\n');
+      buf = frames.pop();
+      frames.forEach(handleFrame);
+    }
+    if (buf.trim()) handleFrame(buf);
+    if (!text) out.textContent = '（没有收到讲解内容）';
+  } catch (e) {
+    out.textContent = '讲解失败: ' + e.message;
+  }
+}
+
 // ============ 第8课：作业与异步批改 ============
 let gradingPollTimer = null;
 const GRADING_STATUS = {pending: '排队中', running: '批改中', succeeded: '已完成', failed: '失败'};
@@ -1331,7 +1425,9 @@ async function init() {
 
     document.getElementById('gradingTeacherForm').style.display = user.role === 'teacher' ? 'block' : 'none';
     document.getElementById('gradingStudentForm').style.display = user.role === 'student' ? 'block' : 'none';
+    document.getElementById('wrongCard').style.display = 'block';
     await loadAssignments();
+    await loadWrongQuestions();
     await loadMaterials();
     await initAssistant();
   } catch (e) { /* api() 已在 401 时跳转 */ }

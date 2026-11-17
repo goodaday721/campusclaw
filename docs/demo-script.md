@@ -206,16 +206,20 @@ docker compose logs --tail=20 worker   看 worker 日志
 
 要说明的四点：提交和任务在同一个事务里写；同一个提交重复提交只会批改一次；多个 worker 抢任务不会抢到同一条；worker 崩了重启会把卡住超过 60 秒的任务重新排队。
 
-批改完成后追一问错题：
+批改完成后追一问错题：学生页面「📕 错题本与错题讲解」卡片会列出低于 60 分的提交，点「讲解这道题」，讲解内容流式显示在卡片下方。
 
+要看到：卡片里有 `错题#1`、题目 `x+3=13`、你的答案 `x=6`、批改意见；点讲解后先诊断错因（如「移项忘记变号」），再分步提问，不给最终答案。
+
+如果演示前想先造一条错题（避免现场等批改），学生账号跑：
+
+```powershell
+$s = (Invoke-RestMethod -Uri "http://localhost:8080/auth/login" -Method Post -ContentType "application/json" -Body '{"username":"student_a","password":"student_a_pass"}').token
+Invoke-RestMethod -Uri "http://localhost:8080/api/assignments/11/submissions" -Method Post -ContentType "application/json" -Headers @{Authorization="Bearer $s"} -Body '{"answer":"x=6"}'
 ```
-GET  /api/wrong-questions                 学生看自己的错题（教师看本班）
-POST /api/wrong-questions/<id>/explain    触发讲解，返回 SSE 流
-```
 
-用判低分的那份提交，先查错题列表，再 `explain`，要看到回答先诊断错因、再分步提问，不直接给最终答案。
+等 10 秒刷新卡片即可。注意同一份作业只能提交一次（重复提交返回原结果，不会重复批改）。
 
-要说明的：错题和批改结果在同一个事务里写，不会出现「有分没错题」；同一份提交重复批改不会生成两条错题（`UNIQUE(submission_id)`）；跨班查别人的错题返回和不存在的完全一样的 404。
+要说明的：错题和批改结果在同一个事务里写，不会出现「有分没错题」；同一份提交重复批改不会生成两条错题（`UNIQUE(submission_id)`）；跨班查别人的错题返回和不存在的完全一样的 404；讲解会新建一条会话，走和助手对话同一条管线（含检索引用）。
 
 ---
 
