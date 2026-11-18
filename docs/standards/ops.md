@@ -53,8 +53,8 @@
 
 ## 发布与回滚
 
-- 发布步骤固定：`git pull` → `docker compose up --build -d` → `docker compose ps` → `curl /health` → 跑三条测试命令。
-  检查：`docker compose ps` 六服务 running；`curl http://localhost:8080/health`。
+- 发布步骤固定：`git pull` → `make up`（等价于 `docker compose up --build -d` + 轮询 `/health/ready`；Windows 无 make 用 `scripts/bootstrap.ps1`）→ 跑 `make verify`。
+  检查：`docker compose ps` 六服务 running；`curl http://localhost:8080/health`；`make verify` 三条命令退出码 0。
 - 回滚：`git checkout <上一个门禁全绿的提交>` → `docker compose up --build -d`；不使用镜像仓库与蓝绿。
   检查：`git log --oneline -3` 确认目标提交；回滚后 `docker compose exec -T api python -m pytest -q` 通过。
 - 发布不做数据回滚；如本次含迁移，先按下一节备份再发。

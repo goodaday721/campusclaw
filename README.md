@@ -15,23 +15,31 @@ SSO/生产高可用、MCP resources/prompts 能力与第三方 MCP SDK 接入、
 前置要求：仅安装 Docker Desktop（含 Docker Compose v2），无需 Python/MySQL 本机环境。
 
 ```bash
-# 1. 准备环境变量（填写数据库密码等必填项）
+# 一条命令跑完全程（推荐）：
+#   缺 .env 时按 .env.example 自动生成随机密钥 → 构建启动六服务 → 轮询就绪检查
+make up
+# Windows 未安装 make 时用等价入口：
+#   powershell -ExecutionPolicy Bypass -File scripts/bootstrap.ps1
+
+# 手工等价路径（需要自己填 .env 必填项）
 cp .env.example .env
 #    编辑 .env：DB_PASSWORD、DB_ROOT_PASSWORD、JWT_SECRET 必须改成你自己的值
 #    （JWT_SECRET 可用 python -c "import secrets; print(secrets.token_hex(32))" 生成）
 #    使用向量检索/问答还需填写 EMBED_API_KEY/EMBED_MODEL 与 CHAT_API_KEY/CHAT_MODEL
-
-# 2. 一键构建并启动（web / api / db / qdrant / mcp-demo / worker 六服务）
 docker compose up --build -d
-
-# 3. 查看服务状态（六个服务均应为 running）
 docker compose ps
 
-# 4. 验证
+# 验证
 #    存活检查：http://localhost:8080/health        → {"status":"ok"}
 #    就绪检查：http://localhost:8080/health/ready  → 200（db/qdrant 均可达）或 503（有依赖不可用）
 #    登录页：  http://localhost:8080/login
+
+# 提交前门禁（pytest + e2e + apitest，三条全绿才合并）
+make verify
 ```
+
+自动完成的部分：建表迁移、种子数据、切片回填、MySQL 就绪重试；`EMBED_API_KEY` / `CHAT_API_KEY`
+属于外部网关密钥无法自动生成，留空时系统正常启动，向量检索与问答降级为 503，关键词链路不受影响。
 
 > web 服务是唯一映射宿主机端口的入口（默认 8080，由 `.env` 的 `WEB_PORT` 控制）；
 > api、MySQL、Qdrant 与 worker 均只在 Compose 内部网络，宿主机无法直连。

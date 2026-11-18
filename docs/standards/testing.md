@@ -39,6 +39,8 @@
 
 ## 一键运行
 
+- 聚合入口：`make verify`（依次执行下面三条，任一条非 0 即中止）。
+  检查：`make verify` 退出码 0；Windows 无 make 时手工依次执行三条。
 - 标准路径（容器内，推荐）：`docker compose exec -T api python -m pytest -q`。
   检查：退出码 0，输出无 `failed`。
 - 容器内 e2e：`docker compose exec -T api python e2e_test.py`；宿主机 HTTP 版：`python e2e_test.py --http`。
